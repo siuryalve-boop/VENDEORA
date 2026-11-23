@@ -52,5 +52,33 @@ do $$ begin
 end $$;
 reset role;
 set constraints all immediate;
-select 'CPF, idade, duplicidade, e-mail confirmado, dados privados e RLS' as verified;
+
+insert into public.lessons (product_id,title,content)
+select id,'Aula teste','Conteúdo teste' from public.products where title='Produto de teste';
+insert into public.orders (id,product_id,seller_id,buyer_id,amount_cents,provider_session)
+select 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',id,owner_id,'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',9900,'cs_test_vendeora'
+from public.products where title='Produto de teste';
+
+set local role authenticated;
+do $$ begin
+  if exists(select 1 from public.lessons where title='Aula teste') then raise exception 'An unpaid order unlocked lessons'; end if;
+end $$;
+reset role;
+
+do $$ begin
+  if public.vendeora_payment_event('event_invalid','cs_test_vendeora','dddddddd-dddd-4ddd-8ddd-dddddddddddd','paid',1,'brl') then
+    raise exception 'A mismatched amount was accepted';
+  end if;
+  if not public.vendeora_payment_event('event_test','cs_test_vendeora','dddddddd-dddd-4ddd-8ddd-dddddddddddd','paid',9900,'brl') then raise exception 'Payment was not recorded'; end if;
+  if not public.vendeora_payment_event('event_test','cs_test_vendeora','dddddddd-dddd-4ddd-8ddd-dddddddddddd','paid',9900,'brl') then raise exception 'Payment retry was rejected'; end if;
+  if (select count(*) from private.payment_events where provider_event='event_test') <> 1 then raise exception 'Payment idempotency failed'; end if;
+end $$;
+
+set local role authenticated;
+insert into public.lesson_progress (lesson_id) select id from public.lessons where title='Aula teste';
+do $$ begin
+  if (select count(*) from public.lesson_progress) <> 1 then raise exception 'Paid lesson access or progress failed'; end if;
+end $$;
+reset role;
+select 'CPF, idade, duplicidade, e-mail confirmado, dados privados, RLS, pedidos e acesso às aulas' as verified;
 rollback;
