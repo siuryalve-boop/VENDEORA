@@ -1,0 +1,1273 @@
+"use client";
+
+import {
+  Activity,
+  BadgeDollarSign,
+  BookOpen,
+  Boxes,
+  ChartNoAxesCombined,
+  ChevronDown,
+  CircleHelp,
+  CreditCard,
+  House,
+  LayoutGrid,
+  Link2,
+  LogOut,
+  Menu,
+  Plus,
+  Settings,
+  ShieldCheck,
+  ShoppingBag,
+  Users,
+  Wallet,
+  X,
+} from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  Action,
+  api,
+  Brand,
+  dateLabel,
+  Empty,
+  Feedback,
+  money,
+  Notice,
+  Password,
+  roleLabel,
+  types,
+  useTask,
+  type Order,
+  type Product,
+  type Profile,
+  type Session,
+} from "./shared";
+
+const navigation = [
+  { id: "dashboard", label: "Visão geral", icon: House, roles: "all" },
+  { id: "produtos", label: "Produtos", icon: Boxes, roles: "producer admin" },
+  { id: "vendas", label: "Vendas", icon: ShoppingBag, roles: "producer admin" },
+  { id: "checkout", label: "Checkout", icon: CreditCard, roles: "producer" },
+  {
+    id: "afiliados",
+    label: "Afiliados",
+    icon: Users,
+    roles: "producer affiliate",
+  },
+  { id: "membros", label: "Área de membros", icon: BookOpen, roles: "all" },
+  {
+    id: "financeiro",
+    label: "Financeiro",
+    icon: Wallet,
+    roles: "producer affiliate",
+  },
+  { id: "usuarios", label: "Usuários", icon: ShieldCheck, roles: "admin" },
+  { id: "configuracoes", label: "Configurações", icon: Settings, roles: "all" },
+];
+
+function useData<T>(endpoint: string | null, refresh = 0) {
+  const [state, setState] = useState<{ data?: T; error?: string }>({});
+  useEffect(() => {
+    if (!endpoint) return;
+    const controller = new AbortController();
+    setState({});
+    api<T>(endpoint, undefined, controller.signal)
+      .then((data) => setState({ data }))
+      .catch((error) => {
+        if (!controller.signal.aborted) setState({ error: error.message });
+      });
+    return () => controller.abort();
+  }, [endpoint, refresh]);
+  return state;
+}
+
+function Data<T>({
+  state,
+  children,
+}: {
+  state: { data?: T; error?: string };
+  children: (value: T) => ReactNode;
+}) {
+  if (state.error) return <Notice>{state.error}</Notice>;
+  if (!state.data)
+    return (
+      <div className="skeleton" role="status" aria-label="Carregando dados" />
+    );
+  return children(state.data);
+}
+
+function Heading({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="page-heading">
+      <div>
+        <h1>{title}</h1>
+        <p>{subtitle}</p>
+      </div>
+      {children}
+    </header>
+  );
+}
+
+const orderStatus: Record<string, string> = {
+  paid: "Aprovado",
+  pending: "Pendente",
+  failed: "Recusado",
+  expired: "Expirado",
+  refunded: "Reembolsado",
+};
+const affiliateStatus: Record<string, string> = {
+  pending: "Pendente",
+  approved: "Aprovada",
+  declined: "Recusada",
+};
+const total = (orders: Order[]) =>
+  orders
+    .filter((order) => order.status === "paid")
+    .reduce((amount, order) => amount + order.amount_cents, 0);
+
+function OrderTable({ orders }: { orders: Order[] }) {
+  if (!orders.length)
+    return (
+      <Empty
+        title="Nenhum pedido encontrado"
+        body="Os pedidos feitos pelo checkout aparecem aqui."
+      />
+    );
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Pedido</th>
+            <th>Data</th>
+            <th>Status</th>
+            <th>Valor</th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((order) => (
+            <tr key={order.id}>
+              <td>
+                <a className="text-link" href={`/pedido/${order.id}`}>
+                  #{order.id.slice(0, 8)}
+                </a>
+              </td>
+              <td>{dateLabel(order.created_at)}</td>
+              <td>
+                <span
+                  className={`pill ${order.status === "paid" ? "pill-green" : ""}`}
+                >
+                  {orderStatus[order.status]}
+                </span>
+              </td>
+              <td>{money(order.amount_cents)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Overview({ profile }: { profile: Profile }) {
+  const orders = useData<Order[]>("pedidos");
+  const [period, setPeriod] = useState("30");
+  const seller = profile.role === "producer" || profile.role === "admin";
+  return (
+    <>
+      <Heading
+        title="Visão geral"
+        subtitle={`Olá, ${profile.name.split(" ")[0]}. Acompanhe a atividade da sua conta.`}
+      >
+        <label className="period">
+          <span className="sr-only">Período</span>
+          <select
+            value={period}
+            onChange={(event) => setPeriod(event.target.value)}
+          >
+            <option value="1">Últimas 24 horas</option>
+            <option value="7">Últimos 7 dias</option>
+            <option value="30">Últimos 30 dias</option>
+            <option value="90">Últimos 90 dias</option>
+          </select>
+          <ChevronDown size={16} />
+        </label>
+      </Heading>
+      <Data state={orders}>
+        {(list) => {
+          const start = Date.now() - Number(period) * 86400000;
+          const filtered = list.filter(
+            (order) => new Date(order.created_at).getTime() >= start,
+          );
+          const paid = filtered.filter((order) => order.status === "paid");
+          const buckets = Array.from(
+            { length: Math.min(10, Number(period)) },
+            () => 0,
+          );
+          for (const order of paid) {
+            const distance = new Date(order.created_at).getTime() - start;
+            const index = Math.min(
+              buckets.length - 1,
+              Math.max(
+                0,
+                Math.floor(
+                  distance / ((Number(period) * 86400000) / buckets.length),
+                ),
+              ),
+            );
+            buckets[index] += order.amount_cents;
+          }
+          const ceiling = Math.max(1, ...buckets);
+          const metrics = [
+            {
+              icon: BadgeDollarSign,
+              title: seller ? "Faturamento aprovado" : "Compras aprovadas",
+              value: money(total(filtered)),
+            },
+            {
+              icon: ShoppingBag,
+              title: "Pedidos aprovados",
+              value: paid.length,
+            },
+            {
+              icon: Activity,
+              title: "Pedidos pendentes",
+              value: filtered.filter((order) => order.status === "pending")
+                .length,
+            },
+            {
+              icon: ChartNoAxesCombined,
+              title: "Ticket médio",
+              value: money(
+                paid.length ? Math.round(total(filtered) / paid.length) : 0,
+              ),
+            },
+          ];
+          return (
+            <>
+              <div className="metrics">
+                {metrics.map(({ icon: Icon, title, value }) => (
+                  <article className="panel metric" key={title}>
+                    <span className="metric-icon">
+                      <Icon size={20} />
+                    </span>
+                    <p>{title}</p>
+                    <strong>{value}</strong>
+                  </article>
+                ))}
+              </div>
+              <section className="panel">
+                <div className="panel-heading">
+                  <h2>
+                    {seller ? "Faturamento no período" : "Compras no período"}
+                  </h2>
+                </div>
+                {paid.length ? (
+                  <div
+                    className="bar-chart"
+                    role="img"
+                    aria-label={`Total de ${money(total(filtered))} no período`}
+                  >
+                    {buckets.map((amount, index) => (
+                      <div
+                        className="bar-column"
+                        key={index}
+                        title={money(amount)}
+                      >
+                        <span
+                          style={{
+                            height: `${Math.max(2, (amount * 100) / ceiling)}%`,
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty
+                    title="Sem movimentação no período"
+                    body="O gráfico aparece quando houver pedidos aprovados."
+                  />
+                )}
+              </section>
+              <section className="panel">
+                <div className="panel-heading">
+                  <h2>Últimas transações</h2>
+                </div>
+                <OrderTable orders={filtered.slice(0, 6)} />
+              </section>
+            </>
+          );
+        }}
+      </Data>
+    </>
+  );
+}
+
+function ProductEditor({
+  product,
+  onSave,
+  onClose,
+}: {
+  product: Product | null;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const task = useTask();
+  const [archive, confirmArchive] = useState(false);
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <h2>{product ? "Editar produto" : "Novo produto"}</h2>
+        <button
+          className="icon-button"
+          onClick={onClose}
+          aria-label="Fechar editor"
+        >
+          <X size={22} />
+        </button>
+      </div>
+      <form
+        className="form panel-form"
+        onSubmit={(event) =>
+          task.submit(event, async (data) => {
+            await api("produtos", {
+              id: product?.id,
+              title: data.get("title"),
+              description: data.get("description"),
+              category: data.get("category"),
+              price_cents: Math.round(Number(data.get("price")) * 100),
+              active: data.get("active") === "on",
+              affiliates_enabled: data.get("affiliates_enabled") === "on",
+            });
+            onSave();
+          })
+        }
+      >
+        <Feedback status={task} />
+        <div className="form-grid">
+          <label className="field span-2">
+            <span>Nome do produto</span>
+            <input
+              required
+              name="title"
+              minLength={3}
+              maxLength={120}
+              defaultValue={product?.title}
+            />
+          </label>
+          <label className="field">
+            <span>Tipo de produto</span>
+            <select name="category" defaultValue={product?.category}>
+              {types.map((type) => (
+                <option key={type}>{type}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Preço em reais</span>
+            <input
+              type="number"
+              name="price"
+              min="5"
+              max="100000"
+              step="0.01"
+              required
+              defaultValue={product ? product.price_cents / 100 : undefined}
+            />
+          </label>
+          <label className="field span-2">
+            <span>Descrição</span>
+            <textarea
+              name="description"
+              rows={4}
+              maxLength={3000}
+              defaultValue={product?.description}
+            />
+          </label>
+        </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            name="active"
+            defaultChecked={product?.active}
+          />{" "}
+          Publicar no checkout
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            name="affiliates_enabled"
+            defaultChecked={product?.affiliates_enabled}
+          />{" "}
+          Aceitar solicitações de afiliados
+        </label>
+        <div className="actions">
+          <Action busy={task.busy} type="submit">
+            Salvar produto
+          </Action>
+          {product && (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => confirmArchive(!archive)}
+            >
+              Arquivar
+            </button>
+          )}
+        </div>
+        {archive && product && (
+          <div className="review">
+            <div>
+              <strong>Arquivar este produto?</strong>
+              <p>
+                O link de checkout deixa de aceitar novos pedidos. O histórico
+                continua disponível.
+              </p>
+              <Action
+                type="button"
+                className="button secondary"
+                busy={task.busy}
+                onClick={() =>
+                  void task.run(async () => {
+                    await api("produtos", { id: product.id, archive: true });
+                    onSave();
+                  })
+                }
+              >
+                Confirmar arquivamento
+              </Action>
+            </div>
+          </div>
+        )}
+      </form>
+    </section>
+  );
+}
+
+function Products({ canEdit }: { canEdit: boolean }) {
+  const [editor, edit] = useState<Product | "new" | null>(null);
+  const [revision, refresh] = useState(0);
+  const products = useData<Product[]>("produtos", revision);
+  return (
+    <>
+      <Heading
+        title="Produtos"
+        subtitle="Cadastre e gerencie seus produtos digitais."
+      >
+        {canEdit && (
+          <Action onClick={() => edit("new")}>
+            <Plus size={18} /> Novo produto
+          </Action>
+        )}
+      </Heading>
+      {editor && (
+        <ProductEditor
+          key={editor === "new" ? editor : editor.id}
+          product={editor === "new" ? null : editor}
+          onClose={() => edit(null)}
+          onSave={() => {
+            edit(null);
+            refresh((value) => value + 1);
+          }}
+        />
+      )}
+      <Data state={products}>
+        {(list) =>
+          list.length ? (
+            <div className="product-grid">
+              {list.map((product) => (
+                <article className="panel product-card" key={product.id}>
+                  <div
+                    className={`product-art art-${types.indexOf(product.category) % 4}`}
+                  >
+                    <Boxes size={37} />
+                  </div>
+                  <div className="product-body">
+                    <div className="form-row">
+                      <span className="product-type">{product.category}</span>
+                      <span
+                        className={`pill ${product.active ? "pill-green" : ""}`}
+                      >
+                        {product.active ? "Ativo" : "Rascunho"}
+                      </span>
+                    </div>
+                    <h2>{product.title}</h2>
+                    <strong>{money(product.price_cents)}</strong>
+                    {canEdit && (
+                      <div className="actions">
+                        <button
+                          className="button secondary"
+                          onClick={() => edit(product)}
+                        >
+                          Gerenciar
+                        </button>
+                        {product.active && (
+                          <a
+                            className="button secondary"
+                            href={`/checkout/${product.id}`}
+                          >
+                            <Link2 size={16} /> Checkout
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <section className="panel">
+              <Empty
+                title="Nenhum produto cadastrado"
+                body="Crie seu primeiro produto para disponibilizar um link de checkout."
+              />
+            </section>
+          )
+        }
+      </Data>
+    </>
+  );
+}
+
+function CheckoutLinks() {
+  const products = useData<Product[]>("produtos");
+  const task = useTask();
+  return (
+    <>
+      <Heading
+        title="Checkout"
+        subtitle="Abra e compartilhe os links dos seus produtos ativos."
+      />
+      <Feedback status={task} />
+      <Data state={products}>
+        {(items) => {
+          const products = items.filter((product) => product.active);
+          return (
+            <section className="panel">
+              {products.length ? (
+                products.map((product) => (
+                  <div className="list-row" key={product.id}>
+                    <div>
+                      <strong>{product.title}</strong>
+                      <p>{money(product.price_cents)}</p>
+                    </div>
+                    <div className="actions">
+                      <a
+                        className="button secondary"
+                        href={`/checkout/${product.id}`}
+                      >
+                        Abrir checkout
+                      </a>
+                      <button
+                        className="button secondary"
+                        onClick={() =>
+                          void task.run(
+                            () =>
+                              navigator.clipboard.writeText(
+                                `${window.location.origin}/checkout/${product.id}`,
+                              ),
+                            "Link copiado.",
+                          )
+                        }
+                      >
+                        <Link2 size={16} /> Copiar link
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <Empty
+                  title="Nenhum checkout disponível"
+                  body="Ative um produto para gerar seu link."
+                >
+                  <a className="text-link" href="/produtos">
+                    Gerenciar produtos
+                  </a>
+                </Empty>
+              )}
+            </section>
+          );
+        }}
+      </Data>
+    </>
+  );
+}
+
+type AffiliateRequest = {
+  id: string;
+  product_id: string;
+  affiliate_id: string;
+  status: string;
+};
+
+function Affiliates({ producer }: { producer: boolean }) {
+  const [revision, refresh] = useState(0);
+  const products = useData<Product[]>("produtos");
+  const requests = useData<AffiliateRequest[]>("afiliacoes", revision);
+  const task = useTask();
+  const mutate = (data: Record<string, unknown>) =>
+    void task.run(async () => {
+      await api("afiliacoes", data);
+      refresh((value) => value + 1);
+    }, "Solicitação atualizada.");
+  return (
+    <>
+      <Heading
+        title="Afiliados"
+        subtitle={
+          producer
+            ? "Revise pedidos de afiliação aos seus produtos."
+            : "Solicite afiliação a produtos disponíveis."
+        }
+      />
+      <Feedback status={task} />
+      <Data state={products}>
+        {(list) => (
+          <Data state={requests}>
+            {(applications) => (
+              <section className="panel">
+                {producer ? (
+                  applications.length ? (
+                    applications.map((entry) => (
+                      <div className="list-row" key={entry.id}>
+                        <div>
+                          <strong>
+                            {list.find(
+                              (product) => product.id === entry.product_id,
+                            )?.title ?? "Produto arquivado"}
+                          </strong>
+                          <p>
+                            Solicitação #{entry.id.slice(0, 8)} ·{" "}
+                            {affiliateStatus[entry.status]}
+                          </p>
+                        </div>
+                        {entry.status === "pending" && (
+                          <div className="actions">
+                            <Action
+                              busy={task.busy}
+                              onClick={() =>
+                                mutate({ id: entry.id, status: "approved" })
+                              }
+                            >
+                              Aprovar
+                            </Action>
+                            <Action
+                              className="button secondary"
+                              busy={task.busy}
+                              onClick={() =>
+                                mutate({ id: entry.id, status: "declined" })
+                              }
+                            >
+                              Recusar
+                            </Action>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <Empty
+                      title="Nenhuma solicitação recebida"
+                      body="Ative a opção de afiliados em um produto para receber pedidos."
+                    />
+                  )
+                ) : list.length ? (
+                  list.map((product) => {
+                    const entry = applications.find(
+                      (request) => request.product_id === product.id,
+                    );
+                    return (
+                      <div className="list-row" key={product.id}>
+                        <div>
+                          <strong>{product.title}</strong>
+                          <p>
+                            {product.category} · {money(product.price_cents)}
+                          </p>
+                        </div>
+                        {entry ? (
+                          <span className="pill">
+                            {affiliateStatus[entry.status]}
+                          </span>
+                        ) : (
+                          <Action
+                            busy={task.busy}
+                            onClick={() => mutate({ product_id: product.id })}
+                          >
+                            Solicitar afiliação
+                          </Action>
+                        )}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <Empty
+                    title="Nenhum produto disponível"
+                    body="Os produtos que aceitam novas afiliações aparecem aqui."
+                  />
+                )}
+              </section>
+            )}
+          </Data>
+        )}
+      </Data>
+    </>
+  );
+}
+
+type Lesson = {
+  id: string;
+  title: string;
+  content: string;
+  product_id: string;
+};
+type Progress = { lesson_id: string };
+
+function Members({ producer }: { producer: boolean }) {
+  const task = useTask();
+  const [revision, refresh] = useState(0);
+  const [editing, edit] = useState<Lesson | "new" | null>(null);
+  const [removing, remove] = useState<string | null>(null);
+  const lessons = useData<Lesson[]>("aulas", revision);
+  const products = useData<Product[]>(producer ? "produtos" : null);
+  const progress = useData<Progress[]>(producer ? null : "progresso", revision);
+  return (
+    <>
+      <Heading
+        title="Área de membros"
+        subtitle={
+          producer
+            ? "Crie aulas e disponibilize conteúdo aos seus compradores."
+            : "Acesse suas aulas e acompanhe seu progresso."
+        }
+      >
+        {producer && Boolean(products.data?.length) && (
+          <Action onClick={() => edit("new")}>
+            <Plus size={18} /> Nova aula
+          </Action>
+        )}
+      </Heading>
+      <Feedback status={task} />
+      {editing && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>{editing === "new" ? "Criar aula" : "Editar aula"}</h2>
+            <button
+              className="icon-button"
+              onClick={() => edit(null)}
+              aria-label="Fechar editor"
+            >
+              <X size={20} />
+            </button>
+          </div>
+          <form
+            key={editing === "new" ? editing : editing.id}
+            className="form panel-form"
+            onSubmit={(event) =>
+              task.submit(
+                event,
+                async (data) => {
+                  await api("aulas", {
+                    id: editing === "new" ? undefined : editing.id,
+                    product_id: data.get("product"),
+                    title: data.get("title"),
+                    content: data.get("content"),
+                  });
+                  edit(null);
+                  refresh((value) => value + 1);
+                },
+                "Aula salva.",
+              )
+            }
+          >
+            {editing === "new" && (
+              <label className="field">
+                <span>Produto</span>
+                <select name="product" required>
+                  {products.data?.map((product) => (
+                    <option key={product.id} value={product.id}>
+                      {product.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="field">
+              <span>Título</span>
+              <input
+                required
+                name="title"
+                minLength={3}
+                maxLength={150}
+                defaultValue={editing === "new" ? "" : editing.title}
+              />
+            </label>
+            <label className="field">
+              <span>Conteúdo da aula</span>
+              <textarea
+                required
+                name="content"
+                rows={8}
+                maxLength={16000}
+                defaultValue={editing === "new" ? "" : editing.content}
+              />
+            </label>
+            <Action busy={task.busy} type="submit">
+              Salvar aula
+            </Action>
+          </form>
+        </section>
+      )}
+      {progress.error && <Notice>{progress.error}</Notice>}
+      <Data state={lessons}>
+        {(items) => (
+          <section className="panel">
+            {items.length ? (
+              items.map((lesson) => {
+                const completed =
+                  progress.data?.some(
+                    (entry) => entry.lesson_id === lesson.id,
+                  ) ?? false;
+                return (
+                  <details className="lesson" key={lesson.id}>
+                    <summary>
+                      <BookOpen size={18} /> {lesson.title}
+                      {completed && (
+                        <span className="pill pill-green">Concluída</span>
+                      )}
+                    </summary>
+                    <p>{lesson.content}</p>
+                    {producer ? (
+                      <div className="actions">
+                        <button
+                          className="button secondary"
+                          onClick={() => edit(lesson)}
+                        >
+                          Editar
+                        </button>
+                        <button
+                          className="button secondary"
+                          onClick={() => remove(lesson.id)}
+                        >
+                          Excluir aula
+                        </button>
+                        {removing === lesson.id && (
+                          <Action
+                            busy={task.busy}
+                            onClick={() =>
+                              void task.run(async () => {
+                                await api("aulas", {
+                                  id: lesson.id,
+                                  remove: true,
+                                });
+                                remove(null);
+                                refresh((value) => value + 1);
+                              }, "Aula excluída.")
+                            }
+                          >
+                            Confirmar exclusão
+                          </Action>
+                        )}
+                      </div>
+                    ) : (
+                      <Action
+                        className="button secondary"
+                        busy={task.busy}
+                        onClick={() =>
+                          void task.run(async () => {
+                            await api("progresso", {
+                              lesson_id: lesson.id,
+                              completed: !completed,
+                            });
+                            refresh((value) => value + 1);
+                          })
+                        }
+                      >
+                        {completed ? "Desmarcar conclusão" : "Concluir aula"}
+                      </Action>
+                    )}
+                  </details>
+                );
+              })
+            ) : (
+              <Empty
+                title="Nenhuma aula disponível"
+                body={
+                  producer
+                    ? "Cadastre um produto e adicione sua primeira aula."
+                    : "As aulas dos seus produtos adquiridos aparecem aqui após a aprovação do pagamento."
+                }
+              />
+            )}
+          </section>
+        )}
+      </Data>
+    </>
+  );
+}
+
+function Orders({ financial }: { financial: boolean }) {
+  const orders = useData<Order[]>("pedidos");
+  const [status, setStatus] = useState("all");
+  return (
+    <>
+      <Heading
+        title={financial ? "Financeiro" : "Vendas"}
+        subtitle={
+          financial
+            ? "Consulte o resumo dos pedidos registrados no ambiente de teste."
+            : "Consulte as vendas registradas e acompanhe o status dos pedidos."
+        }
+      >
+        <label className="period">
+          <span className="sr-only">Filtrar por status</span>
+          <select
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+          >
+            <option value="all">Todos os status</option>
+            {Object.entries(orderStatus).map(([key, label]) => (
+              <option value={key} key={key}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={16} />
+        </label>
+      </Heading>
+      <Data state={orders}>
+        {(list) => (
+          <>
+            {financial && (
+              <div className="metrics">
+                <article className="panel metric">
+                  <span className="metric-icon">
+                    <Wallet size={20} />
+                  </span>
+                  <p>Volume aprovado em testes</p>
+                  <strong>{money(total(list))}</strong>
+                </article>
+              </div>
+            )}
+            <section className="panel">
+              <OrderTable
+                orders={
+                  status === "all"
+                    ? list
+                    : list.filter((order) => order.status === status)
+                }
+              />
+            </section>
+          </>
+        )}
+      </Data>
+    </>
+  );
+}
+
+const privacyLabels: Record<string, string> = {
+  export: "Acesso aos dados",
+  correction: "Correção de dados",
+  deletion: "Exclusão da conta",
+};
+
+function Account({ session }: { session: Session & { profile: Profile } }) {
+  const profileTask = useTask();
+  const passwordTask = useTask();
+  const privacyTask = useTask();
+  const [revision, refresh] = useState(0);
+  const requests = useData<{ id: string; kind: string; status: string }[]>(
+    "privacidade",
+    revision,
+  );
+  return (
+    <>
+      <Heading
+        title="Configurações"
+        subtitle="Gerencie seu perfil, sua senha e suas solicitações de privacidade."
+      />
+      <div className="settings-grid">
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>Dados do perfil</h2>
+          </div>
+          <form
+            className="form panel-form"
+            onSubmit={(event) =>
+              profileTask.submit(
+                event,
+                async (data) => {
+                  await api("perfil", { name: data.get("name") });
+                },
+                "Nome atualizado.",
+              )
+            }
+          >
+            <Feedback status={profileTask} />
+            <label className="field">
+              <span>Nome</span>
+              <input
+                required
+                name="name"
+                minLength={3}
+                maxLength={120}
+                defaultValue={session.profile.name}
+              />
+            </label>
+            <label className="field">
+              <span>E-mail da conta</span>
+              <input readOnly value={session.email ?? ""} />
+            </label>
+            <Action type="submit" busy={profileTask.busy}>
+              Salvar perfil
+            </Action>
+          </form>
+        </section>
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>Alterar senha</h2>
+          </div>
+          <form
+            className="form panel-form"
+            onSubmit={(event) =>
+              passwordTask.submit(
+                event,
+                async (data) => {
+                  await api("auth/senha", {
+                    password: data.get("password"),
+                    confirm: data.get("confirm"),
+                  });
+                },
+                "Senha atualizada.",
+              )
+            }
+          >
+            <Feedback status={passwordTask} />
+            <Password fresh />
+            <Password fresh name="confirm" label="Confirmar senha" />
+            <Action type="submit" busy={passwordTask.busy}>
+              Atualizar senha
+            </Action>
+          </form>
+        </section>
+      </div>
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Privacidade</h2>
+          <a href="/privacidade" className="text-link">
+            Ler política
+          </a>
+        </div>
+        <form
+          className="form panel-form"
+          onSubmit={(event) =>
+            privacyTask.submit(
+              event,
+              async (data) => {
+                await api("privacidade", { kind: data.get("kind") });
+                refresh((value) => value + 1);
+              },
+              "Solicitação registrada para análise.",
+            )
+          }
+        >
+          <Feedback status={privacyTask} />
+          <label className="field">
+            <span>Tipo de solicitação</span>
+            <select required name="kind">
+              {Object.entries(privacyLabels).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Action type="submit" busy={privacyTask.busy}>
+            Enviar solicitação
+          </Action>
+        </form>
+        <Data state={requests}>
+          {(list) =>
+            list.map((request) => (
+              <div className="list-row" key={request.id}>
+                <strong>{privacyLabels[request.kind]}</strong>
+                <span className="pill">
+                  {request.status === "resolved" ? "Concluída" : "Em análise"}
+                </span>
+              </div>
+            ))
+          }
+        </Data>
+      </section>
+    </>
+  );
+}
+
+function AdminUsers() {
+  const profiles = useData<Profile[]>("usuarios");
+  return (
+    <>
+      <Heading
+        title="Usuários"
+        subtitle="Consulte os perfis cadastrados na plataforma."
+      />
+      <Data state={profiles}>
+        {(list) => (
+          <section className="panel">
+            {list.map((entry) => (
+              <div className="list-row" key={entry.id}>
+                <div>
+                  <strong>{entry.name}</strong>
+                  <p>{roleLabel[entry.role]}</p>
+                </div>
+                <span className="pill">
+                  {entry.active ? "Ativo" : "Suspenso"}
+                </span>
+              </div>
+            ))}
+          </section>
+        )}
+      </Data>
+    </>
+  );
+}
+
+export function Dashboard({
+  page,
+  session,
+  confirmed,
+}: {
+  page: string;
+  session: Session & { profile: Profile };
+  confirmed: boolean;
+}) {
+  const [open, showMenu] = useState(false);
+  const logout = useTask();
+  const profile = session.profile;
+  const items = navigation.filter(
+    (item) =>
+      item.roles === "all" || item.roles.split(" ").includes(profile.role),
+  );
+  const active = items.find((item) => item.id === page);
+  const products = active?.id === "produtos" && (
+    <Products canEdit={profile.role === "producer"} />
+  );
+  return (
+    <div className="dashboard">
+      <button
+        className={`mobile-overlay ${open ? "is-open" : ""}`}
+        onClick={() => showMenu(false)}
+        aria-label="Fechar navegação"
+        tabIndex={open ? 0 : -1}
+      />
+      <aside className={`sidebar ${open ? "is-open" : ""}`}>
+        <Brand />
+        <div className="workspace">
+          <span className="workspace-icon">
+            <LayoutGrid size={19} />
+          </span>
+          <div>
+            <strong>Meu espaço</strong>
+            <small>{roleLabel[profile.role]}</small>
+          </div>
+        </div>
+        <nav aria-label="Menu principal">
+          {items.map(({ id, label, icon: Icon }) => (
+            <a
+              href={`/${id}`}
+              key={id}
+              className={page === id ? "nav-current" : ""}
+              aria-current={page === id ? "page" : undefined}
+            >
+              <Icon size={19} /> {label}
+            </a>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <a href="/ajuda">
+            <CircleHelp size={18} /> Ajuda
+          </a>
+          <button
+            onClick={() =>
+              void logout.run(async () => {
+                await api("auth/sair", {});
+                window.location.assign("/entrar");
+              })
+            }
+            disabled={logout.busy}
+          >
+            <LogOut size={18} /> Sair
+          </button>
+        </div>
+      </aside>
+      <div className="dashboard-main">
+        <header className="topbar">
+          <div>
+            <button
+              className="icon-button mobile-menu"
+              aria-label="Abrir navegação"
+              aria-expanded={open}
+              onClick={() => showMenu(!open)}
+            >
+              <Menu size={23} />
+            </button>
+            <span>{active?.label ?? "VENDEORA"}</span>
+          </div>
+          <a
+            href="/configuracoes"
+            className="top-profile"
+            aria-label="Configurações da conta"
+          >
+            <span className="avatar">
+              {profile.name
+                .split(/\s+/)
+                .slice(0, 2)
+                .map((part) => part[0])
+                .join("")
+                .toUpperCase()}
+            </span>
+            <span>{profile.name}</span>
+          </a>
+        </header>
+        <main className="dashboard-content">
+          <Feedback status={logout} />
+          {confirmed && (
+            <Notice success>
+              E-mail confirmado. Sua conta está pronta para uso.
+            </Notice>
+          )}
+          {!active && (
+            <section className="panel">
+              <Empty
+                title="Página indisponível"
+                body="Seu perfil pode acessar os módulos listados no menu."
+              >
+                <a className="text-link" href="/dashboard">
+                  Voltar à visão geral
+                </a>
+              </Empty>
+            </section>
+          )}
+          {active?.id === "dashboard" && <Overview profile={profile} />}
+          {products}
+          {active?.id === "checkout" && <CheckoutLinks />}
+          {active?.id === "afiliados" && (
+            <Affiliates producer={profile.role === "producer"} />
+          )}
+          {active?.id === "membros" && (
+            <Members producer={profile.role === "producer"} />
+          )}
+          {active?.id === "vendas" && <Orders financial={false} />}
+          {active?.id === "financeiro" && <Orders financial />}
+          {active?.id === "configuracoes" && <Account session={session} />}
+          {active?.id === "usuarios" && <AdminUsers />}
+        </main>
+      </div>
+    </div>
+  );
+}
