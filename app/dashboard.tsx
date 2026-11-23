@@ -686,7 +686,7 @@ function ProductDetail({ id }: { id: string }) {
                   )}
                 </div>
                 <div className="panel-form form">
-                  <CheckoutFields id={id} />
+                  <CheckoutFields product={product} />
                 </div>
               </section>
             )}

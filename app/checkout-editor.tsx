@@ -2,7 +2,15 @@
 
 import { useState } from "react";
 import { Data, useData } from "./panel";
-import { Action, api, Empty, Feedback, useTask, type Product } from "./shared";
+import {
+  Action,
+  api,
+  Empty,
+  Feedback,
+  money,
+  useTask,
+  type Product,
+} from "./shared";
 
 type Style = { headline: string; accent: string };
 type Coupon = { id: string; code: string; percent: number; active: boolean };
@@ -17,8 +25,9 @@ export function CheckoutEditor() {
         <h2>Personalizar checkout</h2>
       </div>
       <Data state={products}>
-        {(items) =>
-          items.length && id ? (
+        {(items) => {
+          const product = items.find((item) => item.id === id);
+          return product ? (
             <div className="panel-form form">
               <label className="field">
                 <span>Produto</span>
@@ -33,23 +42,25 @@ export function CheckoutEditor() {
                   ))}
                 </select>
               </label>
-              <CheckoutFields key={id} id={id} />
+              <CheckoutFields key={product.id} product={product} />
             </div>
           ) : (
             <Empty
               title="Sem produtos para personalizar"
               body="Cadastre um produto para editar o checkout ou criar um cupom."
             />
-          )
-        }
+          );
+        }}
       </Data>
     </section>
   );
 }
 
-export function CheckoutFields({ id }: { id: string }) {
+export function CheckoutFields({ product }: { product: Product }) {
+  const { id } = product;
   const [revision, refresh] = useState(0);
   const [color, setColor] = useState<string>();
+  const [headline, setHeadline] = useState<string>();
   const task = useTask();
   const couponsTask = useTask();
   const settings = useData<{ style: Style | null; coupons: Coupon[] }>(
@@ -86,7 +97,8 @@ export function CheckoutFields({ id }: { id: string }) {
                 <input
                   name="headline"
                   maxLength={140}
-                  defaultValue={style?.headline ?? ""}
+                  value={headline ?? style?.headline ?? ""}
+                  onChange={(event) => setHeadline(event.target.value)}
                 />
               </label>
               <label className="field">
@@ -102,6 +114,28 @@ export function CheckoutFields({ id }: { id: string }) {
                 Salvar aparência
               </Action>
             </form>
+            <section
+              aria-label="Prévia do checkout"
+              className="panel panel-form form"
+              style={{
+                borderTop: `4px solid ${color ?? style?.accent ?? "#d94e0b"}`,
+                overflowWrap: "anywhere",
+              }}
+            >
+              <p className="muted">Prévia do checkout</p>
+              <h2>{(headline ?? style?.headline)?.trim() || product.title}</h2>
+              {(headline ?? style?.headline)?.trim() && (
+                <strong>{product.title}</strong>
+              )}
+              {product.description && <p>{product.description}</p>}
+              <p>
+                <strong>{money(product.price_cents)}</strong>
+              </p>
+              <p className="muted">
+                Preço antes de descontos. A prévia acompanha as alterações do
+                editor.
+              </p>
+            </section>
             <h2>Cupons de desconto</h2>
             <form
               className="form"
