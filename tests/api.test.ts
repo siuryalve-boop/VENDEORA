@@ -8,6 +8,45 @@ const env = {
   SUPABASE_URL: "https://db.example.invalid",
   SUPABASE_PUBLISHABLE_KEY: "test-key",
 };
+
+test("matches the browser loopback host when Next.js rewrites the request URL to localhost", async () => {
+  const local = (host: string, origin: string, forwardedHost?: string) =>
+    new Request("http://localhost:4177/api/auth/cadastro", {
+      method: "POST",
+      headers: {
+        host,
+        origin,
+        "content-type": "application/json",
+        ...(forwardedHost ? { "x-forwarded-host": forwardedHost } : {}),
+      },
+      body: "{}",
+    });
+
+  const valid = await handleApi(
+    local("127.0.0.1:4177", "http://127.0.0.1:4177"),
+    {},
+  );
+  assert.equal(valid.status, 400);
+  assert.match((await valid.json()).error, /nome completo/);
+
+  const crossOrigin = await handleApi(
+    local("127.0.0.1:4177", "http://localhost:4177"),
+    {},
+  );
+  assert.equal(crossOrigin.status, 403);
+
+  const forwarded = await handleApi(
+    local("127.0.0.1:4177", "http://example.invalid", "example.invalid"),
+    {},
+  );
+  assert.equal(forwarded.status, 403);
+
+  const configured = await handleApi(
+    local("127.0.0.1:4177", "http://127.0.0.1:4177"),
+    env,
+  );
+  assert.equal(configured.status, 403);
+});
 const registration = {
   name: "Pessoa Teste",
   cpf: "12345678909",

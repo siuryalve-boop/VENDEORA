@@ -14,7 +14,7 @@ npm run check
 npm run build
 ```
 
-Copie `.env.example` para `.env.local` e preencha a URL e a chave publicável do Supabase. `SITE_URL` deve ser a origem usada no navegador, incluindo a porta local quando houver. Acesse `http://localhost:3000`.
+Copie `.env.example` para `.env.local` e preencha a URL e a chave publicável do Supabase. Deixe `SITE_URL` vazio no desenvolvimento para usar `http://localhost:3000` ou `http://127.0.0.1:3000`. Se definir `SITE_URL`, abra o aplicativo nessa origem exata, incluindo a porta.
 
 ## Configurar o Supabase
 

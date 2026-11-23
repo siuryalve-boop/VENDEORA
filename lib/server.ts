@@ -221,9 +221,26 @@ async function signedStripeEvent(request: Request, secret: string) {
   throw new Problem(400, "Assinatura inválida.");
 }
 
+const loopbackHosts = ["localhost", "127.0.0.1", "[::1]"];
+
+function getRequestOrigin(request: Request, url: URL, siteUrl?: string) {
+  if (siteUrl) return new URL(siteUrl).origin;
+  if (url.protocol !== "http:" || !loopbackHosts.includes(url.hostname))
+    return url.origin;
+
+  // Next.js can use localhost internally even when the browser visits a loopback IP.
+  const host = request.headers.get("host")?.toLowerCase();
+  const suffix = url.port ? `:${url.port}` : "";
+  const browserHost = loopbackHosts.find(
+    (alias) =>
+      host === `${alias}${suffix}` || (!suffix && host === `${alias}:80`),
+  );
+  return browserHost ? `http://${browserHost}${suffix}` : url.origin;
+}
+
 export async function handleApi(request: Request, env: Environment) {
   const url = new URL(request.url);
-  const origin = env.SITE_URL ? new URL(env.SITE_URL).origin : url.origin;
+  const origin = getRequestOrigin(request, url, env.SITE_URL);
   const secure = origin.startsWith("https:");
   const headers = new Headers({
     "Cache-Control": "no-store",
