@@ -3,12 +3,14 @@
 import {
   Activity,
   BadgeDollarSign,
+  Bell,
   BookOpen,
   Boxes,
   ChartNoAxesCombined,
   ChevronDown,
   CircleHelp,
   CreditCard,
+  ContactRound,
   House,
   LayoutGrid,
   Link2,
@@ -22,7 +24,18 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useState } from "react";
+import { CheckoutEditor } from "./checkout-editor";
+import {
+  CourseModules,
+  Customers,
+  MfaPanel,
+  Notifications,
+  Reports,
+  Support,
+  type CourseModule,
+} from "./operations";
+import { Data, Heading, useData } from "./panel";
 import {
   Action,
   api,
@@ -46,6 +59,7 @@ const navigation = [
   { id: "dashboard", label: "Visão geral", icon: House, roles: "all" },
   { id: "produtos", label: "Produtos", icon: Boxes, roles: "producer admin" },
   { id: "vendas", label: "Vendas", icon: ShoppingBag, roles: "producer admin" },
+  { id: "clientes", label: "Clientes", icon: ContactRound, roles: "producer" },
   { id: "checkout", label: "Checkout", icon: CreditCard, roles: "producer" },
   {
     id: "afiliados",
@@ -55,65 +69,28 @@ const navigation = [
   },
   { id: "membros", label: "Área de membros", icon: BookOpen, roles: "all" },
   {
+    id: "modulos",
+    label: "Módulos do curso",
+    icon: LayoutGrid,
+    roles: "producer",
+  },
+  {
     id: "financeiro",
     label: "Financeiro",
     icon: Wallet,
     roles: "producer affiliate",
   },
   { id: "usuarios", label: "Usuários", icon: ShieldCheck, roles: "admin" },
+  {
+    id: "relatorios",
+    label: "Relatórios",
+    icon: ChartNoAxesCombined,
+    roles: "producer",
+  },
+  { id: "notificacoes", label: "Notificações", icon: Bell, roles: "all" },
   { id: "configuracoes", label: "Configurações", icon: Settings, roles: "all" },
+  { id: "suporte", label: "Suporte", icon: CircleHelp, roles: "all" },
 ];
-
-function useData<T>(endpoint: string | null, refresh = 0) {
-  const [state, setState] = useState<{ data?: T; error?: string }>({});
-  useEffect(() => {
-    if (!endpoint) return;
-    const controller = new AbortController();
-    setState({});
-    api<T>(endpoint, undefined, controller.signal)
-      .then((data) => setState({ data }))
-      .catch((error) => {
-        if (!controller.signal.aborted) setState({ error: error.message });
-      });
-    return () => controller.abort();
-  }, [endpoint, refresh]);
-  return state;
-}
-
-function Data<T>({
-  state,
-  children,
-}: {
-  state: { data?: T; error?: string };
-  children: (value: T) => ReactNode;
-}) {
-  if (state.error) return <Notice>{state.error}</Notice>;
-  if (!state.data)
-    return (
-      <div className="skeleton" role="status" aria-label="Carregando dados" />
-    );
-  return children(state.data);
-}
-
-function Heading({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string;
-  subtitle: string;
-  children?: ReactNode;
-}) {
-  return (
-    <header className="page-heading">
-      <div>
-        <h1>{title}</h1>
-        <p>{subtitle}</p>
-      </div>
-      {children}
-    </header>
-  );
-}
 
 const orderStatus: Record<string, string> = {
   paid: "Aprovado",
@@ -345,6 +322,7 @@ function ProductEditor({
               price_cents: Math.round(Number(data.get("price")) * 100),
               active: data.get("active") === "on",
               affiliates_enabled: data.get("affiliates_enabled") === "on",
+              commission_percent: Number(data.get("commission_percent")),
             });
             onSave();
           })
@@ -407,6 +385,17 @@ function ProductEditor({
             defaultChecked={product?.affiliates_enabled}
           />{" "}
           Aceitar solicitações de afiliados
+        </label>
+        <label className="field">
+          <span>Comissão de afiliado (%)</span>
+          <input
+            type="number"
+            name="commission_percent"
+            min={0}
+            max={80}
+            defaultValue={product?.commission_percent ?? 0}
+            required
+          />
         </label>
         <div className="actions">
           <Action busy={task.busy} type="submit">
@@ -605,12 +594,21 @@ type AffiliateRequest = {
   product_id: string;
   affiliate_id: string;
   status: string;
+  visits: number;
+};
+type Commission = {
+  order_id: string;
+  product_id: string;
+  amount_cents: number;
+  created_at: string;
+  status: "approved" | "reversed";
 };
 
 function Affiliates({ producer }: { producer: boolean }) {
   const [revision, refresh] = useState(0);
   const products = useData<Product[]>("produtos");
   const requests = useData<AffiliateRequest[]>("afiliacoes", revision);
+  const commissions = useData<Commission[]>("comissoes");
   const task = useTask();
   const mutate = (data: Record<string, unknown>) =>
     void task.run(async () => {
@@ -687,13 +685,36 @@ function Affiliates({ producer }: { producer: boolean }) {
                         <div>
                           <strong>{product.title}</strong>
                           <p>
-                            {product.category} · {money(product.price_cents)}
+                            {product.category} · {money(product.price_cents)} ·{" "}
+                            {product.commission_percent ?? 0}% de comissão
                           </p>
                         </div>
                         {entry ? (
-                          <span className="pill">
-                            {affiliateStatus[entry.status]}
-                          </span>
+                          <div className="actions">
+                            <span className="pill">
+                              {affiliateStatus[entry.status]}
+                            </span>
+                            {entry.status === "approved" && (
+                              <>
+                                <span className="pill">
+                                  {entry.visits} visitas
+                                </span>
+                                <Action
+                                  className="button secondary"
+                                  busy={task.busy}
+                                  onClick={() =>
+                                    void task.run(async () => {
+                                      await navigator.clipboard.writeText(
+                                        `${location.origin}/checkout/${product.id}?ref=${entry.id}`,
+                                      );
+                                    }, "Link de afiliado copiado.")
+                                  }
+                                >
+                                  Copiar link
+                                </Action>
+                              </>
+                            )}
+                          </div>
                         ) : (
                           <Action
                             busy={task.busy}
@@ -716,6 +737,52 @@ function Affiliates({ producer }: { producer: boolean }) {
           </Data>
         )}
       </Data>
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>Comissões em testes</h2>
+        </div>
+        <Data state={commissions}>
+          {(entries) =>
+            entries.length ? (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Data</th>
+                      <th>Produto</th>
+                      <th>Status</th>
+                      <th>Comissão</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((commission) => (
+                      <tr key={commission.order_id}>
+                        <td>{dateLabel(commission.created_at)}</td>
+                        <td>
+                          {products.data?.find(
+                            (product) => product.id === commission.product_id,
+                          )?.title ?? "Produto indisponível"}
+                        </td>
+                        <td>
+                          {commission.status === "approved"
+                            ? "Aprovada em teste"
+                            : "Estornada"}
+                        </td>
+                        <td>{money(commission.amount_cents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <Empty
+                title="Sem comissões registradas"
+                body="As comissões aparecem quando um pedido atribuído a um afiliado é aprovado em teste."
+              />
+            )
+          }
+        </Data>
+      </section>
     </>
   );
 }
@@ -725,6 +792,7 @@ type Lesson = {
   title: string;
   content: string;
   product_id: string;
+  module_id: string | null;
 };
 type Progress = { lesson_id: string };
 
@@ -733,9 +801,20 @@ function Members({ producer }: { producer: boolean }) {
   const [revision, refresh] = useState(0);
   const [editing, edit] = useState<Lesson | "new" | null>(null);
   const [removing, remove] = useState<string | null>(null);
+  const [newProduct, setNewProduct] = useState("");
   const lessons = useData<Lesson[]>("aulas", revision);
+  const modules = useData<CourseModule[]>("modulos");
   const products = useData<Product[]>(producer ? "produtos" : null);
   const progress = useData<Progress[]>(producer ? null : "progresso", revision);
+  const productId =
+    editing === "new"
+      ? newProduct || products.data?.[0]?.id
+      : editing?.product_id;
+  const forLesson =
+    modules.data?.filter((module) => module.product_id === productId) ?? [];
+  const moduleById = new Map(
+    modules.data?.map((module) => [module.id, module]),
+  );
   return (
     <>
       <Heading
@@ -775,6 +854,9 @@ function Members({ producer }: { producer: boolean }) {
                   await api("aulas", {
                     id: editing === "new" ? undefined : editing.id,
                     product_id: data.get("product"),
+                    module_id: data.has("module")
+                      ? data.get("module")
+                      : undefined,
                     title: data.get("title"),
                     content: data.get("content"),
                   });
@@ -788,10 +870,34 @@ function Members({ producer }: { producer: boolean }) {
             {editing === "new" && (
               <label className="field">
                 <span>Produto</span>
-                <select name="product" required>
+                <select
+                  name="product"
+                  value={productId ?? ""}
+                  required
+                  onChange={(event) => setNewProduct(event.target.value)}
+                >
                   {products.data?.map((product) => (
                     <option key={product.id} value={product.id}>
                       {product.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {modules.data && (
+              <label className="field">
+                <span>Módulo</span>
+                <select
+                  name="module"
+                  key={productId}
+                  defaultValue={
+                    editing === "new" ? "" : (editing.module_id ?? "")
+                  }
+                >
+                  <option value="">Sem módulo</option>
+                  {forLesson.map((module) => (
+                    <option key={module.id} value={module.id}>
+                      {module.title}
                     </option>
                   ))}
                 </select>
@@ -824,76 +930,90 @@ function Members({ producer }: { producer: boolean }) {
         </section>
       )}
       {progress.error && <Notice>{progress.error}</Notice>}
+      {modules.error && <Notice>{modules.error}</Notice>}
       <Data state={lessons}>
         {(items) => (
           <section className="panel">
             {items.length ? (
-              items.map((lesson) => {
-                const completed =
-                  progress.data?.some(
-                    (entry) => entry.lesson_id === lesson.id,
-                  ) ?? false;
-                return (
-                  <details className="lesson" key={lesson.id}>
-                    <summary>
-                      <BookOpen size={18} /> {lesson.title}
-                      {completed && (
-                        <span className="pill pill-green">Concluída</span>
-                      )}
-                    </summary>
-                    <p>{lesson.content}</p>
-                    {producer ? (
-                      <div className="actions">
-                        <button
-                          className="button secondary"
-                          onClick={() => edit(lesson)}
-                        >
-                          Editar
-                        </button>
-                        <button
-                          className="button secondary"
-                          onClick={() => remove(lesson.id)}
-                        >
-                          Excluir aula
-                        </button>
-                        {removing === lesson.id && (
-                          <Action
-                            busy={task.busy}
-                            onClick={() =>
-                              void task.run(async () => {
-                                await api("aulas", {
-                                  id: lesson.id,
-                                  remove: true,
-                                });
-                                remove(null);
-                                refresh((value) => value + 1);
-                              }, "Aula excluída.")
-                            }
-                          >
-                            Confirmar exclusão
-                          </Action>
+              items
+                .toSorted(
+                  (a, b) =>
+                    a.product_id.localeCompare(b.product_id) ||
+                    (moduleById.get(a.module_id ?? "")?.position ?? 201) -
+                      (moduleById.get(b.module_id ?? "")?.position ?? 201),
+                )
+                .map((lesson) => {
+                  const completed =
+                    progress.data?.some(
+                      (entry) => entry.lesson_id === lesson.id,
+                    ) ?? false;
+                  return (
+                    <details className="lesson" key={lesson.id}>
+                      <summary>
+                        <BookOpen size={18} /> {lesson.title}
+                        {lesson.module_id &&
+                          moduleById.has(lesson.module_id) && (
+                            <span className="pill">
+                              {moduleById.get(lesson.module_id)?.title}
+                            </span>
+                          )}
+                        {completed && (
+                          <span className="pill pill-green">Concluída</span>
                         )}
-                      </div>
-                    ) : (
-                      <Action
-                        className="button secondary"
-                        busy={task.busy}
-                        onClick={() =>
-                          void task.run(async () => {
-                            await api("progresso", {
-                              lesson_id: lesson.id,
-                              completed: !completed,
-                            });
-                            refresh((value) => value + 1);
-                          })
-                        }
-                      >
-                        {completed ? "Desmarcar conclusão" : "Concluir aula"}
-                      </Action>
-                    )}
-                  </details>
-                );
-              })
+                      </summary>
+                      <p>{lesson.content}</p>
+                      {producer ? (
+                        <div className="actions">
+                          <button
+                            className="button secondary"
+                            onClick={() => edit(lesson)}
+                          >
+                            Editar
+                          </button>
+                          <button
+                            className="button secondary"
+                            onClick={() => remove(lesson.id)}
+                          >
+                            Excluir aula
+                          </button>
+                          {removing === lesson.id && (
+                            <Action
+                              busy={task.busy}
+                              onClick={() =>
+                                void task.run(async () => {
+                                  await api("aulas", {
+                                    id: lesson.id,
+                                    remove: true,
+                                  });
+                                  remove(null);
+                                  refresh((value) => value + 1);
+                                }, "Aula excluída.")
+                              }
+                            >
+                              Confirmar exclusão
+                            </Action>
+                          )}
+                        </div>
+                      ) : (
+                        <Action
+                          className="button secondary"
+                          busy={task.busy}
+                          onClick={() =>
+                            void task.run(async () => {
+                              await api("progresso", {
+                                lesson_id: lesson.id,
+                                completed: !completed,
+                              });
+                              refresh((value) => value + 1);
+                            })
+                          }
+                        >
+                          {completed ? "Desmarcar conclusão" : "Concluir aula"}
+                        </Action>
+                      )}
+                    </details>
+                  );
+                })
             ) : (
               <Empty
                 title="Nenhuma aula disponível"
@@ -1109,30 +1229,90 @@ function Account({ session }: { session: Session & { profile: Profile } }) {
 }
 
 function AdminUsers() {
-  const profiles = useData<Profile[]>("usuarios");
+  const [revision, refresh] = useState(0);
+  const [confirm, setConfirm] = useState<string | null>(null);
+  const task = useTask();
+  const mfa = useData<{ verified: boolean; factor: string | null }>(
+    "auth/mfa",
+    revision,
+  );
+  const profiles = useData<Profile[]>(
+    mfa.data?.verified ? "usuarios" : null,
+    revision,
+  );
+  const updated = () => refresh((value) => value + 1);
   return (
     <>
       <Heading
         title="Usuários"
-        subtitle="Consulte os perfis cadastrados na plataforma."
+        subtitle="Consulte os perfis e gerencie o acesso após validar a sessão."
       />
-      <Data state={profiles}>
-        {(list) => (
-          <section className="panel">
-            {list.map((entry) => (
-              <div className="list-row" key={entry.id}>
-                <div>
-                  <strong>{entry.name}</strong>
-                  <p>{roleLabel[entry.role]}</p>
+      <Feedback status={task} />
+      {!mfa.data?.verified && (
+        <Data state={mfa}>
+          {(status) => <MfaPanel status={status} onVerified={updated} />}
+        </Data>
+      )}
+      {mfa.data?.verified && (
+        <Data state={profiles}>
+          {(list) => (
+            <section className="panel">
+              {list.map((entry) => (
+                <div className="list-row" key={entry.id}>
+                  <div>
+                    <strong>{entry.name}</strong>
+                    <p>{roleLabel[entry.role]}</p>
+                  </div>
+                  <div className="actions">
+                    <span className="pill">
+                      {entry.active ? "Ativo" : "Suspenso"}
+                    </span>
+                    {entry.role !== "admin" &&
+                      (confirm === entry.id ? (
+                        <>
+                          <Action
+                            className="button secondary"
+                            busy={task.busy}
+                            onClick={() =>
+                              void task.run(
+                                async () => {
+                                  await api("usuarios", {
+                                    id: entry.id,
+                                    active: !entry.active,
+                                  });
+                                  setConfirm(null);
+                                  updated();
+                                },
+                                entry.active
+                                  ? "Conta suspensa."
+                                  : "Conta reativada.",
+                              )
+                            }
+                          >
+                            Confirmar
+                          </Action>
+                          <button
+                            className="button secondary"
+                            onClick={() => setConfirm(null)}
+                          >
+                            Cancelar
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="button secondary"
+                          onClick={() => setConfirm(entry.id)}
+                        >
+                          {entry.active ? "Suspender" : "Reativar"}
+                        </button>
+                      ))}
+                  </div>
                 </div>
-                <span className="pill">
-                  {entry.active ? "Ativo" : "Suspenso"}
-                </span>
-              </div>
-            ))}
-          </section>
-        )}
-      </Data>
+              ))}
+            </section>
+          )}
+        </Data>
+      )}
     </>
   );
 }
@@ -1255,7 +1435,12 @@ export function Dashboard({
           )}
           {active?.id === "dashboard" && <Overview profile={profile} />}
           {products}
-          {active?.id === "checkout" && <CheckoutLinks />}
+          {active?.id === "checkout" && (
+            <>
+              <CheckoutLinks />
+              <CheckoutEditor />
+            </>
+          )}
           {active?.id === "afiliados" && (
             <Affiliates producer={profile.role === "producer"} />
           )}
@@ -1266,6 +1451,13 @@ export function Dashboard({
           {active?.id === "financeiro" && <Orders financial />}
           {active?.id === "configuracoes" && <Account session={session} />}
           {active?.id === "usuarios" && <AdminUsers />}
+          {active?.id === "clientes" && <Customers />}
+          {active?.id === "relatorios" && <Reports />}
+          {active?.id === "notificacoes" && <Notifications />}
+          {active?.id === "suporte" && (
+            <Support admin={profile.role === "admin"} />
+          )}
+          {active?.id === "modulos" && <CourseModules />}
         </main>
       </div>
     </div>

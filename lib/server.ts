@@ -478,13 +478,32 @@ export async function handleApi(request: Request, env: Environment) {
       storeSession(headers, secure, null);
       return send({ ok: true });
     }
-    if (route === "GET /api/oferta")
+    if (route === "GET /api/oferta") {
+      const id = requiredId(url.searchParams.get("id"));
+      const [offer, styles] = await Promise.all([
+        getOffer(id),
+        sb<Json[]>(rpc("vendeora_checkout_style"), jsonBody({ product: id })),
+      ]);
       return send({
-        offer: await getOffer(requiredId(url.searchParams.get("id"))),
+        offer,
+        style: styles[0] ?? null,
         testPayments:
           env.STRIPE_SECRET_KEY?.startsWith("sk_test_") &&
           Boolean(env.STRIPE_WEBHOOK_SECRET && env.SUPABASE_SERVICE_ROLE_KEY),
       });
+    }
+
+    if (route === "POST /api/checkout/referral") {
+      const body = await bodyFrom(request);
+      const recorded = await sb<boolean>(
+        rpc("vendeora_referral_click"),
+        jsonBody({
+          product: requiredId(body.product_id),
+          referral: requiredId(body.referral),
+        }),
+      );
+      return send({ recorded });
+    }
 
     const current = await signedIn();
     const { access, user, profile } = current;
@@ -496,6 +515,310 @@ export async function handleApi(request: Request, env: Environment) {
       query?: Record<string, string>,
       method = "POST",
     ) => sb<T>(rows(table, query), jsonBody(values, method, true), access);
+    const call = <T>(name: string, values: unknown) =>
+      sb<T>(rpc(name), jsonBody(values), access);
+    async function quote(product: string, code: unknown) {
+      const normalized = text(code).trim().toUpperCase();
+      if (!/^[A-Z0-9-]{3,32}$/.test(normalized))
+        throw new Problem(400, "Informe um código de cupom válido.");
+      const [discount] = await call<
+        { coupon_id: string; amount_cents: number }[]
+      >("vendeora_checkout_quote", { product, requested_code: normalized });
+      if (!discount)
+        throw new Problem(
+          404,
+          "Este cupom não está disponível para o produto.",
+        );
+      return discount;
+    }
+    if (route === "GET /api/checkout/config") {
+      requireRole(current, "producer");
+      const id = requiredId(url.searchParams.get("id"));
+      const [styles, coupons] = await Promise.all([
+        read<Json[]>("checkouts", {
+          product_id: `eq.${id}`,
+          select: "headline,accent",
+        }),
+        read<Json[]>("coupons", {
+          product_id: `eq.${id}`,
+          select: "id,code,percent,active",
+          order: "created_at.desc",
+          limit: "100",
+        }),
+      ]);
+      return send({ style: styles[0] ?? null, coupons });
+    }
+    if (route === "POST /api/checkout/config") {
+      requireRole(current, "producer");
+      const body = await bodyFrom(request);
+      const headline = text(body.headline).trim();
+      const accent = text(body.accent);
+      if (headline.length > 140 || !/^#[0-9a-f]{6}$/i.test(accent))
+        throw new Problem(400, "Confira o texto e a cor do checkout.");
+      await call("vendeora_save_checkout", {
+        product: requiredId(body.product_id),
+        new_headline: headline,
+        new_accent: accent,
+      });
+      return send({ ok: true });
+    }
+    if (route === "POST /api/cupons") {
+      requireRole(current, "producer");
+      const body = await bodyFrom(request);
+      if (body.id) {
+        if (typeof body.active !== "boolean")
+          throw new Problem(400, "Status de cupom inválido.");
+        const [updated] = await write<Json[]>(
+          "coupons",
+          { active: body.active },
+          { id: `eq.${requiredId(body.id)}` },
+          "PATCH",
+        );
+        if (!updated) throw new Problem(404, "Cupom não encontrado.");
+        return send(updated);
+      }
+      const code = text(body.code).trim().toUpperCase();
+      const percent = Number(body.percent);
+      if (
+        !/^[A-Z0-9-]{3,32}$/.test(code) ||
+        !Number.isInteger(percent) ||
+        percent < 1 ||
+        percent > 90
+      )
+        throw new Problem(
+          400,
+          "Use um código alfanumérico e um desconto entre 1% e 90%.",
+        );
+      return send(
+        await write("coupons", {
+          product_id: requiredId(body.product_id),
+          code,
+          percent,
+        }),
+        201,
+      );
+    }
+    if (route === "POST /api/checkout/cotacao") {
+      const body = await bodyFrom(request);
+      const offer = await getOffer(requiredId(body.product_id));
+      const discount = await quote(offer.id, body.code);
+      return send({ amount_cents: discount.amount_cents });
+    }
+
+    if (route === "GET /api/clientes") {
+      requireRole(current, "producer");
+      const customerId = url.searchParams.get("id");
+      const customers = await call<Json[]>("vendeora_customers", {
+        customer: customerId ? requiredId(customerId) : null,
+      });
+      if (!customerId) return send(customers);
+      if (!customers[0]) throw new Problem(404, "Cliente não encontrado.");
+      const orders = await read("orders", {
+        select: orderFields,
+        seller_id: `eq.${user.id}`,
+        buyer_id: `eq.${customerId}`,
+        order: "created_at.desc",
+        limit: "100",
+      });
+      return send({ customer: customers[0], orders });
+    }
+    if (route === "GET /api/relatorios") {
+      requireRole(current, "producer");
+      const from = url.searchParams.get("de") ?? "";
+      const to = url.searchParams.get("ate") ?? "";
+      const calendarDay = (value: string) => {
+        const date = new Date(`${value}T00:00:00.000Z`);
+        return (
+          /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+          Number.isFinite(+date) &&
+          date.toISOString().slice(0, 10) === value
+        );
+      };
+      if (
+        !calendarDay(from) ||
+        !calendarDay(to) ||
+        from > to ||
+        (Date.parse(to) - Date.parse(from)) / 86400000 > 365
+      )
+        throw new Problem(400, "Informe um período válido de até 366 dias.");
+      return send(
+        await call("vendeora_sales_report", {
+          from_day: from,
+          through_day: to,
+        }),
+      );
+    }
+    if (route === "GET /api/notificacoes") {
+      const onlyUnread = url.searchParams.get("filtro") === "nao-lidas";
+      return send(
+        await read("notifications", {
+          select: "id,event,target_id,read_at,created_at",
+          order: "created_at.desc",
+          limit: "100",
+          ...(onlyUnread ? { read_at: "is.null" } : {}),
+        }),
+      );
+    }
+    if (route === "POST /api/notificacoes") {
+      const body = await bodyFrom(request);
+      const id = requiredId(body.id);
+      const [updated] = await write<Json[]>(
+        "notifications",
+        { read_at: new Date().toISOString() },
+        { id: `eq.${id}` },
+        "PATCH",
+      );
+      if (!updated) throw new Problem(404, "Notificação indisponível.");
+      return send(updated);
+    }
+    if (route === "GET /api/suporte") {
+      const team =
+        profile.role === "admin" && url.searchParams.get("view") === "equipe";
+      return send(
+        await read("support_tickets", {
+          select: "*",
+          order: "created_at.desc",
+          limit: "100",
+          ...(team ? {} : { user_id: `eq.${user.id}` }),
+        }),
+      );
+    }
+    if (route === "POST /api/suporte") {
+      const body = await bodyFrom(request);
+      if (body.id) {
+        requireRole(current, "admin");
+        const reply = text(body.response).trim();
+        if (reply.length < 5 || reply.length > 5000)
+          throw new Problem(
+            400,
+            "Escreva uma resposta de 5 a 5.000 caracteres.",
+          );
+        const answered = await call<boolean>("vendeora_answer_ticket", {
+          ticket: requiredId(body.id),
+          reply,
+          close_ticket: body.close === true,
+        });
+        if (!answered)
+          throw new Problem(404, "Chamado indisponível ou encerrado.");
+        return send({ ok: true });
+      }
+      const subject = text(body.subject).trim();
+      const message = text(body.message).trim();
+      if (
+        subject.length < 5 ||
+        subject.length > 120 ||
+        message.length < 10 ||
+        message.length > 5000
+      )
+        throw new Problem(
+          400,
+          "Confira o assunto e a mensagem antes de enviar.",
+        );
+      return send(await write("support_tickets", { subject, message }), 201);
+    }
+    if (route === "GET /api/modulos") {
+      return send(
+        await read("course_modules", {
+          select: "id,product_id,title,position",
+          order: "position.asc,created_at.asc",
+          limit: "500",
+        }),
+      );
+    }
+    if (route === "POST /api/modulos") {
+      requireRole(current, "producer");
+      const body = await bodyFrom(request);
+      const id = body.id ? requiredId(body.id) : null;
+      if (id && body.remove === true) {
+        await sb(
+          rows("course_modules", { id: `eq.${id}` }),
+          { method: "DELETE" },
+          access,
+        );
+        return send({ ok: true });
+      }
+      const title = text(body.title).trim();
+      const position = Number(body.position ?? 1);
+      if (
+        title.length < 3 ||
+        title.length > 150 ||
+        !Number.isInteger(position) ||
+        position < 1 ||
+        position > 200
+      )
+        throw new Problem(
+          400,
+          "Informe o nome do módulo e uma posição entre 1 e 200.",
+        );
+      const [saved] = await write<Json[]>(
+        "course_modules",
+        id
+          ? { title, position }
+          : { title, position, product_id: requiredId(body.product_id) },
+        id ? { id: `eq.${id}` } : {},
+        id ? "PATCH" : "POST",
+      );
+      if (!saved) throw new Problem(404, "Módulo não encontrado.");
+      return send(saved, id ? 200 : 201);
+    }
+    if (route === "GET /api/auth/mfa") {
+      const account = await auth<
+        User & {
+          factors?: { id: string; factor_type: string; status: string }[];
+        }
+      >("user", {}, access);
+      const claims =
+        access.split(".")[1]?.replace(/-/g, "+").replace(/_/g, "/") ?? "";
+      let verified = false;
+      try {
+        verified = JSON.parse(atob(claims)).aal === "aal2";
+      } catch {
+        /* Access was authenticated upstream. */
+      }
+      return send({
+        verified,
+        factor:
+          account.factors?.find(
+            (factor) =>
+              factor.factor_type === "totp" && factor.status === "verified",
+          )?.id ?? null,
+      });
+    }
+    if (route === "POST /api/auth/mfa") {
+      const body = await bodyFrom(request);
+      if (body.action === "enroll") {
+        const enrolled = await auth<{ id: string; totp: { secret: string } }>(
+          "factors",
+          jsonBody({ factor_type: "totp", issuer: "VENDEORA" }),
+          access,
+        );
+        return send({ factor: enrolled.id, secret: enrolled.totp.secret });
+      }
+      const code = text(body.code);
+      if (body.action !== "verify" || !/^\d{6}$/.test(code))
+        throw new Problem(
+          400,
+          "Informe o código de seis dígitos do autenticador.",
+        );
+      const factor = requiredId(body.factor);
+      const challenge = await auth<{ id: string }>(
+        `factors/${factor}/challenge`,
+        jsonBody({}),
+        access,
+      );
+      const tokens = await auth<Tokens>(
+        `factors/${factor}/verify`,
+        jsonBody({ challenge_id: challenge.id, code }),
+        access,
+      );
+      storeSession(
+        headers,
+        secure,
+        tokens,
+        cookieValue(request, cookieKeys.remember) === "1",
+      );
+      return send({ ok: true });
+    }
 
     if (route === "POST /api/auth/senha") {
       const body = await bodyFrom(request);
@@ -555,6 +878,10 @@ export async function handleApi(request: Request, env: Environment) {
       const description = text(body.description).trim();
       const category = text(body.category);
       const price_cents = Number(body.price_cents);
+      const commission_percent =
+        body.commission_percent === undefined
+          ? undefined
+          : Number(body.commission_percent);
       if (
         title.length < 3 ||
         title.length > 120 ||
@@ -562,7 +889,11 @@ export async function handleApi(request: Request, env: Environment) {
         !productTypes.includes(category) ||
         !Number.isInteger(price_cents) ||
         price_cents < 500 ||
-        price_cents > 10000000
+        price_cents > 10000000 ||
+        (commission_percent !== undefined &&
+          (!Number.isInteger(commission_percent) ||
+            commission_percent < 0 ||
+            commission_percent > 80))
       )
         throw new Problem(
           400,
@@ -575,6 +906,7 @@ export async function handleApi(request: Request, env: Environment) {
           description,
           category,
           price_cents,
+          commission_percent,
           active: body.active === true,
           affiliates_enabled: body.affiliates_enabled === true,
         },
@@ -587,11 +919,25 @@ export async function handleApi(request: Request, env: Environment) {
     if (route === "GET /api/afiliacoes")
       return send(
         await read("affiliate_requests", {
-          select: "id,product_id,affiliate_id,status,created_at",
+          select: "id,product_id,affiliate_id,status,created_at,visits",
           order: "created_at.desc",
           limit: "250",
         }),
       );
+    if (route === "GET /api/comissoes") {
+      if (profile.role !== "producer" && profile.role !== "affiliate")
+        throw new Problem(
+          403,
+          "Comissões não estão disponíveis para este perfil.",
+        );
+      return send(
+        await read("commissions", {
+          select: "order_id,product_id,amount_cents,created_at,status",
+          order: "created_at.desc",
+          limit: "250",
+        }),
+      );
+    }
     if (route === "POST /api/afiliacoes") {
       const body = await bodyFrom(request);
       if (profile.role === "affiliate")
@@ -616,7 +962,7 @@ export async function handleApi(request: Request, env: Environment) {
     if (route === "GET /api/aulas")
       return send(
         await read("lessons", {
-          select: "id,product_id,title,content,created_at",
+          select: "id,product_id,module_id,title,content,created_at",
           order: "created_at.asc",
           limit: "250",
         }),
@@ -642,11 +988,20 @@ export async function handleApi(request: Request, env: Environment) {
         content.length > 16000
       )
         throw new Problem(400, "Confira o título e o conteúdo da aula.");
+      const assignment =
+        body.module_id === undefined
+          ? {}
+          : { module_id: body.module_id ? requiredId(body.module_id) : null };
       const [saved] = await write<Json[]>(
         "lessons",
         id
-          ? { title, content }
-          : { title, content, product_id: requiredId(body.product_id) },
+          ? { title, content, ...assignment }
+          : {
+              title,
+              content,
+              ...assignment,
+              product_id: requiredId(body.product_id),
+            },
         id ? { id: `eq.${id}` } : {},
         id ? "PATCH" : "POST",
       );
@@ -708,6 +1063,22 @@ export async function handleApi(request: Request, env: Environment) {
         }),
       );
     }
+    if (route === "POST /api/usuarios") {
+      requireRole(current, "admin");
+      const body = await bodyFrom(request);
+      if (typeof body.active !== "boolean")
+        throw new Problem(400, "Status de conta inválido.");
+      const updated = await call<boolean>("vendeora_change_account", {
+        account: requiredId(body.id),
+        enable_account: body.active,
+      });
+      if (!updated)
+        throw new Problem(
+          404,
+          "Essa conta não pode ser alterada neste painel.",
+        );
+      return send({ ok: true });
+    }
     if (route === "GET /api/pedido") {
       const [order] = await read<Order[]>("orders", {
         select: orderFields,
@@ -746,6 +1117,15 @@ export async function handleApi(request: Request, env: Environment) {
           "Use uma conta compradora diferente para testar este checkout.",
         );
       const orderId = requiredId(body.attempt_id);
+      const discount = text(body.coupon)
+        ? await quote(offer.id, body.coupon)
+        : null;
+      const [referral] = body.referral
+        ? await call<{ id: string; commission_percent: number }[]>(
+            "vendeora_checkout_referral",
+            { product: offer.id, referral: requiredId(body.referral) },
+          )
+        : [];
       let order: Order & { product_id: string; buyer_id: string };
       try {
         [order] = await sb<(typeof order)[]>(
@@ -756,7 +1136,10 @@ export async function handleApi(request: Request, env: Environment) {
               product_id: offer.id,
               seller_id: product.owner_id,
               buyer_id: user.id,
-              amount_cents: offer.price_cents,
+              amount_cents: discount?.amount_cents ?? offer.price_cents,
+              applied_coupon_id: discount?.coupon_id ?? null,
+              referral_id: referral?.id ?? null,
+              commission_percent: referral?.commission_percent ?? 0,
             },
             "POST",
             true,

@@ -23,7 +23,7 @@ Copie `.env.example` para `.env.local` e preencha a URL e a chave publicável do
 3. Configure a URL do Site em Authentication → URL Configuration. Atualize o template de cadastro para usar `<a href="{{ .SiteURL }}/api/auth/confirm?token_hash={{ .TokenHash }}&type=email">Confirmar e-mail</a>` e o de recuperação para usar `<a href="{{ .SiteURL }}/api/auth/confirm?token_hash={{ .TokenHash }}&type=recovery">Redefinir senha</a>`.
 4. Configure SMTP próprio para os e-mails de produção. Teste o envio, a confirmação e a recuperação com uma conta de controle antes de liberar cadastros.
 5. Configure Turnstile nas proteções do Supabase Auth. Coloque apenas a chave pública correspondente em `NEXT_PUBLIC_TURNSTILE_SITE_KEY`. A validação do desafio precisa ficar ativa no Supabase Auth para também cobrir solicitações diretas.
-6. Execute `tests/database.sql` com a função administrativa do SQL Editor. Os registros de teste ficam em uma transação revertida. Verifique também `GET /api/health` na aplicação publicada.
+6. Execute `tests/database.sql` e `tests/operations.sql` com a função administrativa do SQL Editor. Os registros de teste ficam em transações revertidas. Verifique também `GET /api/health` na aplicação publicada.
 
 O Supabase armazena e verifica senhas. O CPF bruto sai dos metadados antes da inserção do usuário e é substituído por um HMAC com chave protegida no esquema `private`. Data de nascimento e telefone ficam no mesmo esquema. Preserve a chave de HMAC nos backups criptografados. A confirmação de e-mail e o perfil ativo são verificados no banco. O papel `admin` só pode ser atribuído por uma operação privilegiada e deve ter autenticação reforçada antes do uso administrativo em produção. Os campos internos de verificação de identidade permitem integrar um provedor futuro de titularidade.
 
@@ -49,4 +49,8 @@ GitHub guarda o código. Para o banco, habilite os backups do plano Supabase ou 
 
 ## Escopo desta versão
 
-Inclui cadastro e login com Supabase, confirmação e recuperação por e-mail configurável, painel com pedidos reais do banco, produtos, links de checkout, pedidos Stripe em teste, afiliações com revisão, aulas de texto com progresso, consulta administrativa de perfis e solicitações de privacidade. Pagamentos reais, Pix, boleto, saques, rastreamento e comissões de afiliados, coprodução, uploads de mídia e verificação de titularidade exigem implementação ou configuração adicional.
+Inclui cadastro e login com Supabase, confirmação e recuperação por e-mail configurável, painel com pedidos reais do banco, produtos, links de checkout, pedidos Stripe em teste, afiliações com revisão, aulas de texto com progresso, consulta administrativa de perfis e solicitações de privacidade. Pagamentos reais, Pix, boleto, repasses, saques, coprodução, uploads de mídia e verificação de titularidade exigem implementação ou configuração adicional.
+
+O painel do produtor também traz CRM com histórico de compradores e exportação CSV, relatórios de vendas, edição de texto e cor do checkout, cupons e módulos de cursos. Notificações internas registram mudanças de pagamentos, afiliações e atendimento. A equipe pode responder a chamados e suspender ou reativar contas pelo painel após verificar a sessão com um aplicativo autenticador.
+
+Afiliados aprovados podem copiar links exclusivos, ver as visitas registradas e consultar as comissões calculadas sobre pedidos do ambiente de testes. O percentual é definido no produto, e a comissão é registrada no banco após o pagamento ser aprovado pelo webhook de testes.

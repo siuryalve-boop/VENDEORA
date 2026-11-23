@@ -28,6 +28,7 @@ export type Product = {
   price_cents: number;
   active: boolean;
   affiliates_enabled: boolean;
+  commission_percent?: number;
 };
 export type Order = {
   id: string;

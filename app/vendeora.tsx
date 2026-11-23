@@ -25,6 +25,8 @@ import {
 } from "./shared";
 
 const checkoutPath = /^\/checkout\/[\da-f-]{36}$/i;
+const referralId =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function useLoad<T>(endpoint: string) {
   const [state, update] = useState<{ data?: T; error?: string }>();
@@ -41,12 +43,28 @@ function useLoad<T>(endpoint: string) {
 }
 
 function Checkout({ path, id }: { path: string; id: string }) {
-  const offer = useLoad<{ offer: Product; testPayments?: boolean }>(
-    `oferta?id=${encodeURIComponent(id)}`,
-  );
+  const offer = useLoad<{
+    offer: Product;
+    style: { headline: string; accent: string } | null;
+    testPayments?: boolean;
+  }>(`oferta?id=${encodeURIComponent(id)}`);
   const session = useLoad<Session>("auth/session");
   const [attempt, setAttempt] = useState("");
+  const [referral, setReferral] = useState("");
+  const [coupon, setCoupon] = useState<{ code: string; amount: number }>();
+  const discount = useTask();
   const task = useTask();
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("ref") ?? "";
+    if (!referralId.test(code)) return;
+    setReferral(code);
+    const visit = `vendeora.visit.${id}.${code}`;
+    if (sessionStorage.getItem(visit)) return;
+    sessionStorage.setItem(visit, "1");
+    void api("checkout/referral", { product_id: id, referral: code }).catch(
+      () => sessionStorage.removeItem(visit),
+    );
+  }, [id]);
   return (
     <main className="simple-layout">
       <header>
@@ -56,7 +74,14 @@ function Checkout({ path, id }: { path: string; id: string }) {
         </a>
       </header>
       <div className="checkout-grid">
-        <section className="panel checkout-panel">
+        <section
+          className="panel checkout-panel"
+          style={
+            offer?.data?.style
+              ? { borderTop: `4px solid ${offer.data.style.accent}` }
+              : undefined
+          }
+        >
           <span className="section-label">CHECKOUT VENDEORA</span>
           {!offer && (
             <div
@@ -69,11 +94,19 @@ function Checkout({ path, id }: { path: string; id: string }) {
           {offer?.data && (
             <>
               <h1>{offer.data.offer.title}</h1>
+              {offer.data.style?.headline && (
+                <p>
+                  <strong>{offer.data.style.headline}</strong>
+                </p>
+              )}
               <p>{offer.data.offer.description}</p>
               <span className="pill">{offer.data.offer.category}</span>
               <div className="checkout-price">
                 <small>Total do pedido</small>
-                <strong>{money(offer.data.offer.price_cents)}</strong>
+                <strong>
+                  {money(coupon?.amount ?? offer.data.offer.price_cents)}
+                </strong>
+                {coupon && <small>Cupom {coupon.code} aplicado</small>}
               </div>
             </>
           )}
@@ -84,7 +117,56 @@ function Checkout({ path, id }: { path: string; id: string }) {
           </div>
           <h2>Pagamento</h2>
           <Feedback status={task} />
+          <Feedback status={discount} />
           {session?.error && <Notice>{session.error}</Notice>}
+          {offer?.data && session?.data?.profile && (
+            <form
+              className="form"
+              onSubmit={(event) =>
+                discount.submit(
+                  event,
+                  async (form) => {
+                    const code = String(form.get("coupon") ?? "")
+                      .trim()
+                      .toUpperCase();
+                    const quote = await api<{ amount_cents: number }>(
+                      "checkout/cotacao",
+                      { product_id: id, code },
+                    );
+                    setCoupon({ code, amount: quote.amount_cents });
+                    setAttempt("");
+                  },
+                  "Cupom aplicado.",
+                )
+              }
+            >
+              <label className="field">
+                <span>Cupom de desconto</span>
+                <input name="coupon" minLength={3} maxLength={32} required />
+              </label>
+              <div className="actions">
+                <Action
+                  type="submit"
+                  className="button secondary"
+                  busy={discount.busy}
+                >
+                  Aplicar
+                </Action>
+                {coupon && (
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => {
+                      setCoupon(undefined);
+                      setAttempt("");
+                    }}
+                  >
+                    Remover
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
           {offer?.data &&
             (offer.data.testPayments ? (
               <>
@@ -101,7 +183,12 @@ function Checkout({ path, id }: { path: string; id: string }) {
                           setAttempt(key);
                           const result = await api<{ url: string }>(
                             "checkout",
-                            { product_id: id, attempt_id: key },
+                            {
+                              product_id: id,
+                              attempt_id: key,
+                              coupon: coupon?.code,
+                              referral: referral || undefined,
+                            },
                           );
                           window.location.assign(result.url);
                         })
@@ -112,7 +199,7 @@ function Checkout({ path, id }: { path: string; id: string }) {
                   ) : (
                     <a
                       className="button primary"
-                      href={`/entrar?next=${encodeURIComponent(path)}`}
+                      href={`/entrar?next=${encodeURIComponent(path + (referral ? `?ref=${referral}` : ""))}`}
                     >
                       Entrar para continuar
                     </a>
@@ -335,7 +422,11 @@ function SessionGate({
     update(new URLSearchParams(window.location.search));
   }, []);
   const requested = query?.get("next") ?? "";
-  const next = checkoutPath.test(requested) ? requested : "/dashboard";
+  const [destination, parameters] = requested.split("?", 2);
+  const referral = new URLSearchParams(parameters).get("ref") ?? "";
+  const next = checkoutPath.test(destination)
+    ? destination + (referralId.test(referral) ? `?ref=${referral}` : "")
+    : "/dashboard";
   const profile = session?.data?.profile;
   if (profile && session?.data)
     return (
