@@ -277,9 +277,9 @@ export async function handleApi(request: Request, env: Environment) {
   };
   const sb = client(env);
   const stripe = stripeConfig(env);
-  const allowedStripe =
-    stripe.enabled &&
-    (stripe.mode === "test" || Boolean(env.SITE_URL && secure));
+  const stripeIssue =
+    stripe.issue ??
+    (stripe.mode === "live" && (!env.SITE_URL || !secure) ? "site_url" : null);
   const manualPayouts = env.VENDEORA_STRIPE_MANUAL_PAYOUTS === "true";
   const provider = stripeClient(stripe.key ?? "");
   const serviceRpc = <T>(name: string, params: Json) =>
@@ -292,8 +292,10 @@ export async function handleApi(request: Request, env: Environment) {
       active_mode: stripe.mode,
       new_account: account ?? null,
     });
-  const connectReady = async () =>
-    allowedStripe && (await databaseMode()) === stripe.mode;
+  const connectIssue = async () =>
+    stripeIssue ??
+    ((await databaseMode()) === stripe.mode ? null : "database_mode");
+  const connectReady = async () => (await connectIssue()) === null;
   const canSell = (account: ConnectedAccount) =>
     account.details_submitted && account.capabilities?.transfers === "active";
   const auth = <T>(action: string, init?: RequestInit, token?: string) =>
@@ -665,10 +667,12 @@ export async function handleApi(request: Request, env: Environment) {
       route === "POST /api/stripe/saques"
     ) {
       requireRole(current, "producer");
-      const enabled = await connectReady();
+      const issue = await connectIssue();
+      const enabled = issue === null;
       const status = {
         mode: stripe.mode,
         enabled,
+        issue,
         fee: platformFeePercent,
         verified: hasVerifiedAuthenticator(access),
       };
@@ -1135,6 +1139,36 @@ export async function handleApi(request: Request, env: Environment) {
             ? "seller_id"
             : "buyer_id"
         ] = `eq.${user.id}`;
+      const status = url.searchParams.get("status");
+      const product = url.searchParams.get("product");
+      const id = url.searchParams.get("id");
+      if (status) {
+        if (
+          !["pending", "paid", "failed", "expired", "refunded"].includes(status)
+        )
+          throw new Problem(400, "Status inválido.");
+        query.status = `eq.${status}`;
+      }
+      if (product) query.product_id = `eq.${requiredId(product)}`;
+      if (id) query.id = `eq.${requiredId(id)}`;
+      const dateRange: string[] = [];
+      for (const [param, operator] of [
+        ["from", "gte"],
+        ["to", "lt"],
+      ]) {
+        const day = url.searchParams.get(param);
+        if (!day) continue;
+        const boundary = new Date(`${day}T03:00:00.000Z`);
+        if (
+          !/^\d{4}-\d{2}-\d{2}$/.test(day) ||
+          Number.isNaN(+boundary) ||
+          boundary.toISOString().slice(0, 10) !== day
+        )
+          throw new Problem(400, "Data inválida.");
+        if (param === "to") boundary.setUTCDate(boundary.getUTCDate() + 1);
+        dateRange.push(`created_at.${operator}.${boundary.toISOString()}`);
+      }
+      if (dateRange.length) query.and = `(${dateRange.join(",")})`;
       return send(await read("orders", query));
     }
     if (route === "GET /api/marketplace") {
@@ -1145,15 +1179,19 @@ export async function handleApi(request: Request, env: Environment) {
         await call("vendeora_marketplace", {
           search_term: (url.searchParams.get("q") ?? "").trim().slice(0, 120),
           product_category: category,
-          ranking: url.searchParams.get("ranking") === "recent" ? "recent" : "popular",
+          ranking:
+            url.searchParams.get("ranking") === "recent" ? "recent" : "popular",
         }),
       );
     }
     if (route === "GET /api/vendas/resumo") {
       requireRole(current, "producer");
       const days = Number(url.searchParams.get("days") ?? 30);
-      if (![1, 7, 30, 90].includes(days)) throw new Problem(400, "Período inválido.");
-      const [summary] = await call<Json[]>("vendeora_sales_overview", { period_days: days });
+      if (![1, 7, 30, 90].includes(days))
+        throw new Problem(400, "Período inválido.");
+      const [summary] = await call<Json[]>("vendeora_sales_overview", {
+        period_days: days,
+      });
       return send(summary);
     }
     if (route === "GET /api/produtos") {
@@ -1176,6 +1214,13 @@ export async function handleApi(request: Request, env: Environment) {
       requireRole(current, "producer");
       const body = await bodyFrom(request);
       const id = body.id ? requiredId(body.id) : null;
+      if (body.copy === true) {
+        const copy = await call<string | null>("vendeora_copy_product", {
+          source: requiredId(id),
+        });
+        if (!copy) throw new Problem(404, "Produto não encontrado.");
+        return send({ id: copy }, 201);
+      }
       if (body.archive === true && id) {
         const [updated] = await write<Offer[]>(
           "products",
@@ -1265,7 +1310,10 @@ export async function handleApi(request: Request, env: Environment) {
           );
         } catch (error) {
           if (error instanceof SupabaseError && error.code === "23505")
-            throw new Problem(409, "Você já solicitou afiliação a este produto.");
+            throw new Problem(
+              409,
+              "Você já solicitou afiliação a este produto.",
+            );
           throw error;
         }
       }
@@ -1407,7 +1455,12 @@ export async function handleApi(request: Request, env: Environment) {
         id: `eq.${requiredId(url.searchParams.get("id"))}`,
       });
       if (!order) throw new Problem(404, "Pedido não encontrado.");
-      return send(order);
+      const history = await read("order_history", {
+        select: "id,status,occurred_at",
+        order_id: `eq.${order.id}`,
+        order: "occurred_at.asc,id.asc",
+      });
+      return send({ ...order, history });
     }
     if (route === "POST /api/checkout") {
       if (!(await connectReady()))

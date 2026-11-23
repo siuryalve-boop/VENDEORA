@@ -1,8 +1,17 @@
 "use client";
 
 import {
-  Braces, Clapperboard, Download, Globe, Megaphone, MessagesSquare,
-  Package, PackageOpen, ScanFace, ShieldCheck, Wallet,
+  Braces,
+  Clapperboard,
+  Download,
+  Globe,
+  Megaphone,
+  MessagesSquare,
+  Package,
+  PackageOpen,
+  ScanFace,
+  ShieldCheck,
+  Wallet,
 } from "lucide-react";
 import { useState } from "react";
 import { MfaPanel } from "./operations";
@@ -33,13 +42,37 @@ type OwnedPack = {
 };
 
 const packThemes = {
-  "afiliado-sem-rosto": { icon: ScanFace, theme: "Marketing de afiliados", tone: "violet" },
-  "primeiro-produto-digital": { icon: PackageOpen, theme: "Criação de produtos digitais", tone: "orange" },
-  "social-media-e-conteudo": { icon: Megaphone, theme: "Redes sociais e conteúdo", tone: "rose" },
+  "afiliado-sem-rosto": {
+    icon: ScanFace,
+    theme: "Marketing de afiliados",
+    tone: "violet",
+  },
+  "primeiro-produto-digital": {
+    icon: PackageOpen,
+    theme: "Criação de produtos digitais",
+    tone: "orange",
+  },
+  "social-media-e-conteudo": {
+    icon: Megaphone,
+    theme: "Redes sociais e conteúdo",
+    tone: "rose",
+  },
   "sites-freelancer": { icon: Globe, theme: "Criação de sites", tone: "blue" },
-  "saas-primeira-versao": { icon: Braces, theme: "Desenvolvimento de SaaS", tone: "violet" },
-  "video-curto-e-edicao": { icon: Clapperboard, theme: "Edição e roteiros de vídeo", tone: "rose" },
-  "vendas-e-atendimento": { icon: MessagesSquare, theme: "Vendas e atendimento", tone: "green" },
+  "saas-primeira-versao": {
+    icon: Braces,
+    theme: "Desenvolvimento de SaaS",
+    tone: "violet",
+  },
+  "video-curto-e-edicao": {
+    icon: Clapperboard,
+    theme: "Edição e roteiros de vídeo",
+    tone: "rose",
+  },
+  "vendas-e-atendimento": {
+    icon: MessagesSquare,
+    theme: "Vendas e atendimento",
+    tone: "green",
+  },
 };
 
 function cents(value: FormDataEntryValue | null) {
@@ -124,9 +157,15 @@ export function PackCatalog() {
         {(items) => (
           <div className="product-grid">
             {items.map((item) => {
-              const { icon: Icon, theme, tone } =
-                packThemes[item.slug as keyof typeof packThemes] ??
-                { icon: Package, theme: "Produtos digitais", tone: "orange" };
+              const {
+                icon: Icon,
+                theme,
+                tone,
+              } = packThemes[item.slug as keyof typeof packThemes] ?? {
+                icon: Package,
+                theme: "Produtos digitais",
+                tone: "orange",
+              };
               return (
                 <article key={item.slug} className="panel">
                   <div className={`pack-art pack-art-${tone}`}>
@@ -193,6 +232,7 @@ export function PackLibrary() {
 type PayStatus = {
   mode: "test" | "live";
   enabled: boolean;
+  issue: keyof typeof stripeIssues | null;
   fee: number;
   verified: boolean;
   account: null | {
@@ -212,6 +252,21 @@ type PayStatus = {
       automatic: boolean;
     }[];
   };
+};
+
+const stripeIssues = {
+  missing_key:
+    "A hospedagem ainda não recebeu uma chave da Stripe para esta versão.",
+  key_mode:
+    "A chave da Stripe cadastrada é inválida ou pertence a outro ambiente. A chave e o modo de pagamentos precisam corresponder.",
+  webhook:
+    "A hospedagem precisa do segredo de assinatura do webhook da Stripe.",
+  database_credentials:
+    "A integração ainda precisa da credencial de servidor do Supabase.",
+  site_url:
+    "O modo real requer o endereço HTTPS oficial da VENDEORA configurado na hospedagem.",
+  database_mode:
+    "O modo de pagamentos da hospedagem é diferente do modo configurado no banco.",
 };
 
 const payoutLabels: Record<string, string> = {
@@ -237,7 +292,7 @@ export function StripePanel() {
     <>
       <Feedback status={task} />
       <Data state={stripe}>
-        {({ mode, enabled, account, fee, verified }) => (
+        {({ mode, enabled, issue, account, fee, verified }) => (
           <>
             <section className="panel">
               <div className="panel-heading">
@@ -252,7 +307,9 @@ export function StripePanel() {
                 </p>
                 {!enabled ? (
                   <Notice>
-                    O Stripe Connect ainda aguarda ativação pela VENDEORA.
+                    {issue
+                      ? stripeIssues[issue]
+                      : "O Stripe Connect ainda aguarda ativação pela VENDEORA."}
                   </Notice>
                 ) : (
                   <>

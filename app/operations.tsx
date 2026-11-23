@@ -48,7 +48,7 @@ export type CourseModule = {
   position: number;
 };
 
-function downloadCsv(filename: string, rows: (string | number)[][]) {
+export function downloadCsv(filename: string, rows: (string | number)[][]) {
   const escape = (value: string | number) => {
     const string = String(value);
     const safe = /^\s*[=+\-@\t\r]/.test(string) ? `'${string}` : string;

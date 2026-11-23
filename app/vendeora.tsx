@@ -222,8 +222,11 @@ function Checkout({ path, id }: { path: string; id: string }) {
 }
 
 function OrderPage({ id }: { id: string }) {
-  const order = useLoad<Order>(`pedido?id=${encodeURIComponent(id)}`);
+  const order = useLoad<
+    Order & { history: { id: number; status: string; occurred_at: string }[] }
+  >(`pedido?id=${encodeURIComponent(id)}`);
   const labels: Record<string, string> = {
+    created: "Pedido criado",
     paid: "Pagamento aprovado",
     pending: "Pagamento pendente",
     failed: "Pagamento recusado",
@@ -253,13 +256,28 @@ function OrderPage({ id }: { id: string }) {
             <div>
               <strong>{money(order.data.amount_cents)}</strong>
               <p>
-                Pedido #{order.data.id.slice(0, 8)}
+                Pedido #{order.data.id}
                 {order.data.payment_mode === "test"
                   ? " · Ambiente de testes"
                   : ""}
               </p>
             </div>
           </div>
+        )}
+        {!!order?.data?.history?.length && (
+          <section aria-label="Histórico do pedido">
+            <h2>Histórico do pedido</h2>
+            <ol>
+              {order.data.history.map((entry) => (
+                <li key={entry.id}>
+                  {labels[entry.status]} ·{" "}
+                  {new Date(entry.occurred_at).toLocaleString("pt-BR", {
+                    timeZone: "America/Sao_Paulo",
+                  })}
+                </li>
+              ))}
+            </ol>
+          </section>
         )}
         {order?.data?.status === "pending" && (
           <button

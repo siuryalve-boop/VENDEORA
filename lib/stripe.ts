@@ -46,13 +46,19 @@ export type StripeBalance = {
 export const stripeConfig = (env: Record<string, string | undefined>) => {
   const mode: StripeMode =
     env.VENDEORA_STRIPE_MODE === "live" ? "live" : "test";
-  const key = env.STRIPE_SECRET_KEY;
-  const enabled = Boolean(
-    (key?.startsWith(`sk_${mode}_`) || key?.startsWith(`rk_${mode}_`)) &&
-    env.SUPABASE_SERVICE_ROLE_KEY &&
-    env.STRIPE_WEBHOOK_SECRET,
-  );
-  return { mode, key, enabled };
+  const key = env.STRIPE_SECRET_KEY?.trim();
+  const validKey =
+    key?.startsWith(`sk_${mode}_`) || key?.startsWith(`rk_${mode}_`);
+  const issue = !key
+    ? "missing_key"
+    : !validKey
+      ? "key_mode"
+      : !env.STRIPE_WEBHOOK_SECRET?.trim().startsWith("whsec_")
+        ? "webhook"
+        : !env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+          ? "database_credentials"
+          : null;
+  return { mode, key, issue, enabled: issue === null };
 };
 
 const providerMessages: Record<string, string> = {

@@ -29,7 +29,7 @@ O Supabase armazena e verifica senhas. O CPF bruto sai dos metadados antes da in
 
 ## Stripe Connect e packs digitais
 
-O servidor aceita chaves padrão (`sk_…`) e restritas (`rk_…`) do mesmo ambiente. Uma chave restrita deve permitir as operações usadas no Connect, no Checkout e nos saques da conta conectada. Configure as permissões no painel da Stripe e armazene a chave em `STRIPE_SECRET_KEY`.
+O servidor aceita chaves padrão (`sk_…`) e restritas (`rk_…`) do mesmo ambiente. Uma chave restrita deve permitir as operações usadas no Connect, no Checkout e nos saques da conta conectada. Configure todas as permissões no painel da Stripe e armazene a chave em `STRIPE_SECRET_KEY`.
 
 1. Aplique as migrações do Supabase em ordem. O banco inicia em modo `test`.
 2. Na hospedagem, configure `SITE_URL` com a origem HTTPS, `STRIPE_SECRET_KEY` com a chave `sk_test_…` da plataforma Connect e `SUPABASE_SERVICE_ROLE_KEY`. Cadastre `/api/stripe/webhook` na Stripe e salve o segredo `whsec_…` em `STRIPE_WEBHOOK_SECRET`.
@@ -57,6 +57,22 @@ Se estiver usando o pacote de backup, extraia o ZIP. Para recuperar também os c
 GitHub guarda o código. Para o banco, habilite os backups do plano Supabase ou agende exportações criptografadas com acesso restrito. A estratégia de recuperação deve incluir dados de autenticação, tabelas privadas, funções, configurações de Auth e, quando houver, os objetos do Storage. Teste a restauração periodicamente em um projeto separado. Evite colocar dumps, arquivos `.env` ou chaves no Git.
 
 ## Escopo desta versão
+
+Stack atual: Next.js e TypeScript na Vercel, PostgreSQL e autenticação no Supabase e Stripe Connect para checkout e repasses. Os módulos compartilham o mesmo domínio e banco.
+
+### Produtos, vendas e pagamentos
+
+- **Produtos → Duplicar como rascunho** copia os dados do produto, estilo do checkout, módulos, aulas e materiais de packs. Pedidos, permissões de afiliados e cupons continuam vinculados ao produto de origem.
+- **Vendas** filtra no servidor por data, produto, status e código completo. O CSV exporta os pedidos retornados pela consulta, até 500 registros. As datas seguem o horário de Brasília.
+- **Pedido** mostra o histórico registrado no banco com acesso restrito à compra. Para pedidos anteriores à migração, as datas existentes de criação e aprovação são recuperadas. Alterações futuras de status são registradas sem reproduzir eventos antigos desconhecidos.
+- **Financeiro** informa a primeira pendência de configuração da Stripe e mantém as credenciais no servidor. Chaves precisam estar no mesmo ambiente do webhook. Confira a configuração do modo e faça um novo deploy após alterar variáveis. Salvar as chaves habilita a configuração técnica quando o ambiente coincide, mas a Stripe confirma a elegibilidade da conta e o produtor conclui seu cadastro bancário.
+
+Execute `tests/order_history.sql` no SQL Editor após as migrações e `npm test` localmente. Os registros SQL de teste são revertidos.
+
+### Dependências e módulos em desenvolvimento
+
+- Vendas e saques reais dependem de hospedagem comercial, credenciais live e validação da Stripe. Recorrência, chargebacks, conciliação completa, repasses de afiliados e coprodução precisam de integração e testes específicos.
+- E-mail, WhatsApp, emissão fiscal, IA, vídeo, domínios e backups do banco exigem configurar serviços externos antes da operação. Automações, eventos, equipes, licenças, fidelidade e demais módulos empresariais ainda precisam de implementação.
 
 Inclui cadastro e login com Supabase, confirmação e recuperação por e-mail configurável, painel com pedidos do banco, produtos, packs com download privado, checkout por cartão via Stripe Connect, afiliações com revisão, aulas de texto com progresso, consulta administrativa de perfis e solicitações de privacidade. O checkout e os saques dependem da configuração da Stripe. Pix, boleto, assinaturas, repasses de afiliados, coprodução, uploads de mídia e verificação de titularidade na VENDEORA exigem implementação adicional.
 
