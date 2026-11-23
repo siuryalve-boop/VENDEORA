@@ -29,6 +29,8 @@ O Supabase armazena e verifica senhas. O CPF bruto sai dos metadados antes da in
 
 ## Stripe Connect e packs digitais
 
+O servidor aceita chaves padrão (`sk_…`) e restritas (`rk_…`) do mesmo ambiente. Uma chave restrita deve permitir as operações usadas no Connect, no Checkout e nos saques da conta conectada. Configure as permissões no painel da Stripe e armazene a chave em `STRIPE_SECRET_KEY`.
+
 1. Aplique as migrações do Supabase em ordem. O banco inicia em modo `test`.
 2. Na hospedagem, configure `SITE_URL` com a origem HTTPS, `STRIPE_SECRET_KEY` com a chave `sk_test_…` da plataforma Connect e `SUPABASE_SERVICE_ROLE_KEY`. Cadastre `/api/stripe/webhook` na Stripe e salve o segredo `whsec_…` em `STRIPE_WEBHOOK_SECRET`.
 3. Selecione os eventos da plataforma `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired` e `charge.refunded`.

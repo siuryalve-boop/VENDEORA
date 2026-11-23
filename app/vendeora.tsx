@@ -441,6 +441,11 @@ function SessionGate({
         page={path === "/" || path === "/entrar" ? "dashboard" : path.slice(1)}
         session={{ ...session.data, profile }}
         confirmed={query?.get("status") === "confirmed"}
+        affiliateProductId={
+          referralId.test(query?.get("produto") ?? "")
+            ? (query?.get("produto") ?? undefined)
+            : undefined
+        }
       />
     );
   if (!session && path !== "/" && path !== "/entrar")

@@ -1,6 +1,9 @@
 "use client";
 
-import { Download, Package, ShieldCheck, Wallet } from "lucide-react";
+import {
+  Braces, Clapperboard, Download, Globe, Megaphone, MessagesSquare,
+  Package, PackageOpen, ScanFace, ShieldCheck, Wallet,
+} from "lucide-react";
 import { useState } from "react";
 import { MfaPanel } from "./operations";
 import { Data, Heading, useData } from "./panel";
@@ -27,6 +30,16 @@ type OwnedPack = {
   title: string;
   pack_slug: string;
   file_count: number;
+};
+
+const packThemes = {
+  "afiliado-sem-rosto": { icon: ScanFace, theme: "Marketing de afiliados", tone: "violet" },
+  "primeiro-produto-digital": { icon: PackageOpen, theme: "Criação de produtos digitais", tone: "orange" },
+  "social-media-e-conteudo": { icon: Megaphone, theme: "Redes sociais e conteúdo", tone: "rose" },
+  "sites-freelancer": { icon: Globe, theme: "Criação de sites", tone: "blue" },
+  "saas-primeira-versao": { icon: Braces, theme: "Desenvolvimento de SaaS", tone: "violet" },
+  "video-curto-e-edicao": { icon: Clapperboard, theme: "Edição e roteiros de vídeo", tone: "rose" },
+  "vendas-e-atendimento": { icon: MessagesSquare, theme: "Vendas e atendimento", tone: "green" },
 };
 
 function cents(value: FormDataEntryValue | null) {
@@ -110,22 +123,28 @@ export function PackCatalog() {
       <Data state={templates}>
         {(items) => (
           <div className="product-grid">
-            {items.map((item) => (
-              <article key={item.slug} className="panel">
-                <div className="panel-heading">
-                  <Package size={21} />
-                  <h2>{item.title}</h2>
-                </div>
-                <div className="panel-form form">
-                  <p>{item.description}</p>
-                  <p className="muted">
-                    {item.files.length} arquivos · preço sugerido{" "}
-                    {money(item.price)}
-                  </p>
-                  <Action onClick={() => setPick(item)}>Ver materiais</Action>
-                </div>
-              </article>
-            ))}
+            {items.map((item) => {
+              const { icon: Icon, theme, tone } =
+                packThemes[item.slug as keyof typeof packThemes] ??
+                { icon: Package, theme: "Produtos digitais", tone: "orange" };
+              return (
+                <article key={item.slug} className="panel">
+                  <div className={`pack-art pack-art-${tone}`}>
+                    <Icon size={35} strokeWidth={1.7} aria-hidden="true" />
+                    <span>{theme}</span>
+                  </div>
+                  <div className="panel-form form">
+                    <h2>{item.title}</h2>
+                    <p>{item.description}</p>
+                    <p className="muted">
+                      {item.files.length} arquivos · preço sugerido{" "}
+                      {money(item.price)}
+                    </p>
+                    <Action onClick={() => setPick(item)}>Ver materiais</Action>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </Data>

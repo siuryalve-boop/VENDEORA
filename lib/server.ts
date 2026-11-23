@@ -1126,7 +1126,7 @@ export async function handleApi(request: Request, env: Environment) {
       const query: Record<string, string> = {
         select: orderFields,
         order: "created_at.desc",
-        limit: "500",
+        limit: url.searchParams.get("view") === "resumo" ? "6" : "500",
       };
       if (profile.role !== "admin")
         query[
@@ -1137,6 +1137,25 @@ export async function handleApi(request: Request, env: Environment) {
         ] = `eq.${user.id}`;
       return send(await read("orders", query));
     }
+    if (route === "GET /api/marketplace") {
+      const category = url.searchParams.get("category") ?? "";
+      if (category && !productTypes.includes(category))
+        throw new Problem(400, "Categoria inválida.");
+      return send(
+        await call("vendeora_marketplace", {
+          search_term: (url.searchParams.get("q") ?? "").trim().slice(0, 120),
+          product_category: category,
+          ranking: url.searchParams.get("ranking") === "recent" ? "recent" : "popular",
+        }),
+      );
+    }
+    if (route === "GET /api/vendas/resumo") {
+      requireRole(current, "producer");
+      const days = Number(url.searchParams.get("days") ?? 30);
+      if (![1, 7, 30, 90].includes(days)) throw new Problem(400, "Período inválido.");
+      const [summary] = await call<Json[]>("vendeora_sales_overview", { period_days: days });
+      return send(summary);
+    }
     if (route === "GET /api/produtos") {
       const query: Record<string, string> = {
         select: "*",
@@ -1144,6 +1163,8 @@ export async function handleApi(request: Request, env: Environment) {
         order: "created_at.desc",
         limit: "250",
       };
+      const id = url.searchParams.get("id");
+      if (id) query.id = `eq.${requiredId(id)}`;
       if (profile.role === "producer") query.owner_id = `eq.${user.id}`;
       else if (profile.role === "affiliate") {
         query.active = "eq.true";
@@ -1207,14 +1228,17 @@ export async function handleApi(request: Request, env: Environment) {
       if (!saved) throw new Problem(404, "Produto não encontrado.");
       return send(saved, id ? 200 : 201);
     }
-    if (route === "GET /api/afiliacoes")
+    if (route === "GET /api/afiliacoes") {
+      const product = url.searchParams.get("produto");
       return send(
         await read("affiliate_requests", {
           select: "id,product_id,affiliate_id,status,created_at,visits",
           order: "created_at.desc",
           limit: "250",
+          ...(product ? { product_id: `eq.${requiredId(product)}` } : {}),
         }),
       );
+    }
     if (route === "GET /api/comissoes") {
       if (profile.role !== "producer" && profile.role !== "affiliate")
         throw new Problem(
@@ -1231,20 +1255,27 @@ export async function handleApi(request: Request, env: Environment) {
     }
     if (route === "POST /api/afiliacoes") {
       const body = await bodyFrom(request);
-      if (profile.role === "affiliate")
-        return send(
-          await write("affiliate_requests", {
-            product_id: requiredId(body.product_id),
-          }),
-          201,
-        );
+      if (profile.role === "affiliate") {
+        try {
+          return send(
+            await write("affiliate_requests", {
+              product_id: requiredId(body.product_id),
+            }),
+            201,
+          );
+        } catch (error) {
+          if (error instanceof SupabaseError && error.code === "23505")
+            throw new Problem(409, "Você já solicitou afiliação a este produto.");
+          throw error;
+        }
+      }
       requireRole(current, "producer");
       if (body.status !== "approved" && body.status !== "declined")
         throw new Problem(400, "Status inválido.");
       const [updated] = await write<Json[]>(
         "affiliate_requests",
         { status: body.status },
-        { id: `eq.${requiredId(body.id)}` },
+        { id: `eq.${requiredId(body.id)}`, status: "eq.pending" },
         "PATCH",
       );
       if (!updated) throw new Problem(404, "Solicitação não encontrada.");

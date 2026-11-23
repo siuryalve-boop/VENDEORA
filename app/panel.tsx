@@ -3,19 +3,31 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, Notice } from "./shared";
 
-export function useData<T>(endpoint: string | null, refresh = 0) {
+export function useData<T>(endpoint: string | null, refresh = 0, interval = 0) {
   const [state, setState] = useState<{ data?: T; error?: string }>({});
   useEffect(() => {
     if (!endpoint) return;
     const controller = new AbortController();
     setState({});
-    api<T>(endpoint, undefined, controller.signal)
-      .then((data) => setState({ data }))
-      .catch((error) => {
-        if (!controller.signal.aborted) setState({ error: error.message });
-      });
-    return () => controller.abort();
-  }, [endpoint, refresh]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async () => {
+      try {
+        const data = await api<T>(endpoint, undefined, controller.signal);
+        if (!controller.signal.aborted) setState({ data });
+      } catch (error) {
+        if (!controller.signal.aborted)
+          setState({ error: error instanceof Error ? error.message : "Falha ao carregar." });
+      } finally {
+        if (interval && !controller.signal.aborted)
+          timer = setTimeout(load, interval);
+      }
+    };
+    void load();
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [endpoint, refresh, interval]);
   return state;
 }
 

@@ -47,7 +47,7 @@ export function CheckoutEditor() {
   );
 }
 
-function CheckoutFields({ id }: { id: string }) {
+export function CheckoutFields({ id }: { id: string }) {
   const [revision, refresh] = useState(0);
   const [color, setColor] = useState<string>();
   const task = useTask();

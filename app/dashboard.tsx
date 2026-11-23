@@ -21,12 +21,14 @@ import {
   Settings,
   ShieldCheck,
   ShoppingBag,
+  Store,
   Users,
   Wallet,
   X,
 } from "lucide-react";
-import { useState } from "react";
-import { CheckoutEditor } from "./checkout-editor";
+import { useEffect, useState } from "react";
+import { CheckoutEditor, CheckoutFields } from "./checkout-editor";
+import { Marketplace } from "./marketplace";
 import { PackCatalog, PackLibrary, StripePanel } from "./commerce";
 import {
   CourseModules,
@@ -60,6 +62,7 @@ import {
 const navigation = [
   { id: "dashboard", label: "Visão geral", icon: House, roles: "all" },
   { id: "produtos", label: "Produtos", icon: Boxes, roles: "producer admin" },
+  { id: "marketplace", label: "Marketplace", icon: Store, roles: "all" },
   { id: "packs", label: "Packs digitais", icon: Package, roles: "producer" },
   { id: "vendas", label: "Vendas", icon: ShoppingBag, roles: "producer admin" },
   { id: "clientes", label: "Clientes", icon: ContactRound, roles: "producer" },
@@ -156,9 +159,25 @@ function OrderTable({ orders }: { orders: Order[] }) {
   );
 }
 
+type SalesSummary = {
+  approved: number;
+  pending: number;
+  gross_cents: number;
+  fee_cents: number;
+  refunded: number;
+  buckets: number[];
+  payment_mode: "test" | "live";
+};
+
 function Overview({ profile }: { profile: Profile }) {
-  const orders = useData<Order[]>("pedidos");
   const [period, setPeriod] = useState("30");
+  const producer = profile.role === "producer";
+  const orders = useData<Order[]>(
+    producer ? "pedidos?view=resumo" : "pedidos", 0, 30000,
+  );
+  const summary = useData<SalesSummary>(
+    producer ? `vendas/resumo?days=${period}` : null, 0, 30000,
+  );
   const seller = profile.role === "producer" || profile.role === "admin";
   return (
     <>
@@ -180,8 +199,13 @@ function Overview({ profile }: { profile: Profile }) {
           <ChevronDown size={16} />
         </label>
       </Heading>
+      {producer && summary.error && <Notice>{summary.error}</Notice>}
       <Data state={orders}>
         {(list) => {
+          if (producer && !summary.data)
+            return summary.error ? null : (
+              <div className="skeleton" role="status" aria-label="Carregando vendas" />
+            );
           const start = Date.now() - Number(period) * 86400000;
           const filtered = list.filter(
             (order) => new Date(order.created_at).getTime() >= start,
@@ -204,30 +228,31 @@ function Overview({ profile }: { profile: Profile }) {
             );
             buckets[index] += order.amount_cents;
           }
-          const ceiling = Math.max(1, ...buckets);
+          const overview = summary.data;
+          const chart = overview?.buckets ?? buckets;
+          const ceiling = Math.max(1, ...chart);
+          const gross = overview?.gross_cents ?? total(filtered);
+          const approved = overview?.approved ?? paid.length;
           const metrics = [
             {
               icon: BadgeDollarSign,
               title: seller ? "Faturamento aprovado" : "Compras aprovadas",
-              value: money(total(filtered)),
+              value: money(gross),
             },
             {
               icon: ShoppingBag,
               title: "Pedidos aprovados",
-              value: paid.length,
+              value: approved,
             },
             {
               icon: Activity,
               title: "Pedidos pendentes",
-              value: filtered.filter((order) => order.status === "pending")
-                .length,
+              value: overview?.pending ?? filtered.filter((order) => order.status === "pending").length,
             },
             {
               icon: ChartNoAxesCombined,
               title: "Ticket médio",
-              value: money(
-                paid.length ? Math.round(total(filtered) / paid.length) : 0,
-              ),
+              value: money(approved ? Math.round(gross / approved) : 0),
             },
           ];
           return (
@@ -243,19 +268,29 @@ function Overview({ profile }: { profile: Profile }) {
                   </article>
                 ))}
               </div>
+              {overview && (
+                <div className="overview-summary">
+                  {overview.payment_mode === "test" && (
+                    <span className="pill">Vendas em ambiente de teste</span>
+                  )}
+                  <span>Taxa VENDEORA nas vendas aprovadas <strong>{money(overview.fee_cents)}</strong></span>
+                  <span>Reembolsos <strong>{overview.refunded}</strong></span>
+                  <a className="text-link" href="/financeiro">Consultar saldo e saques</a>
+                </div>
+              )}
               <section className="panel">
                 <div className="panel-heading">
                   <h2>
                     {seller ? "Faturamento no período" : "Compras no período"}
                   </h2>
                 </div>
-                {paid.length ? (
+                {approved ? (
                   <div
                     className="bar-chart"
                     role="img"
-                    aria-label={`Total de ${money(total(filtered))} no período`}
+                    aria-label={`Total de ${money(gross)} no período`}
                   >
-                    {buckets.map((amount, index) => (
+                    {chart.map((amount, index) => (
                       <div
                         className="bar-column"
                         key={index}
@@ -296,7 +331,7 @@ function ProductEditor({
   onClose,
 }: {
   product: Product | null;
-  onSave: () => void;
+  onSave: (product: Product | null) => void;
   onClose: () => void;
 }) {
   const task = useTask();
@@ -317,7 +352,7 @@ function ProductEditor({
         className="form panel-form"
         onSubmit={(event) =>
           task.submit(event, async (data) => {
-            await api("produtos", {
+            const saved = await api<Product>("produtos", {
               id: product?.id,
               title: data.get("title"),
               description: data.get("description"),
@@ -327,8 +362,8 @@ function ProductEditor({
               affiliates_enabled: data.get("affiliates_enabled") === "on",
               commission_percent: Number(data.get("commission_percent")),
             });
-            onSave();
-          })
+            onSave(saved);
+          }, "Produto atualizado.")
         }
       >
         <Feedback status={task} />
@@ -379,7 +414,7 @@ function ProductEditor({
             name="active"
             defaultChecked={product?.active}
           />{" "}
-          Publicar no checkout
+          Publicar no marketplace e no checkout
         </label>
         <label className="check">
           <input
@@ -429,7 +464,7 @@ function ProductEditor({
                 onClick={() =>
                   void task.run(async () => {
                     await api("produtos", { id: product.id, archive: true });
-                    onSave();
+                    onSave(null);
                   })
                 }
               >
@@ -443,10 +478,56 @@ function ProductEditor({
   );
 }
 
-function Products({ canEdit }: { canEdit: boolean }) {
-  const [editor, edit] = useState<Product | "new" | null>(null);
+function ProductDetail({ id }: { id: string }) {
+  const [tab, setTab] = useState("details");
   const [revision, refresh] = useState(0);
-  const products = useData<Product[]>("produtos", revision);
+  const data = useData<Product[]>(`produtos?id=${id}`, revision);
+  useEffect(() => {
+    if (window.location.hash === "#checkout") setTab("checkout");
+  }, []);
+  return (
+    <Data state={data}>
+      {([product]) => !product ? (
+        <section className="panel">
+          <Empty title="Produto indisponível" body="Selecione um produto do seu catálogo.">
+            <a className="text-link" href="/produtos">Voltar a Produtos</a>
+          </Empty>
+        </section>
+      ) : (
+        <>
+          <Heading title={product.title} subtitle={product.active ? "Produto publicado" : "Produto em rascunho"}>
+            <a className="button secondary" href="/produtos">Voltar ao catálogo</a>
+          </Heading>
+          <div className="product-sections" role="group" aria-label="Seções do produto">
+            <button className="button secondary" type="button" aria-pressed={tab === "details"} onClick={() => setTab("details")}>Dados do produto</button>
+            <button className="button secondary" type="button" aria-pressed={tab === "checkout"} onClick={() => setTab("checkout")}>Editar checkout</button>
+            <a className="button secondary" href={`/afiliados?produto=${id}`}>Solicitações de afiliados</a>
+          </div>
+          {tab === "details" ? (
+            <ProductEditor product={product} onClose={() => window.location.assign("/produtos")} onSave={(saved) => {
+              if (saved) refresh((value) => value + 1);
+              else window.location.assign("/produtos");
+            }} />
+          ) : (
+            <section className="panel">
+              <div className="panel-heading">
+                <h2>Checkout do produto</h2>
+                {product.active && (
+                  <a className="text-link" href={`/checkout/${id}`} target="_blank" rel="noreferrer">Abrir checkout</a>
+                )}
+              </div>
+              <div className="panel-form form"><CheckoutFields id={id} /></div>
+            </section>
+          )}
+        </>
+      )}
+    </Data>
+  );
+}
+
+function Products({ canEdit }: { canEdit: boolean }) {
+  const [creating, setCreating] = useState(false);
+  const products = useData<Product[]>("produtos");
   return (
     <>
       <Heading
@@ -454,19 +535,17 @@ function Products({ canEdit }: { canEdit: boolean }) {
         subtitle="Cadastre e gerencie seus produtos digitais."
       >
         {canEdit && (
-          <Action onClick={() => edit("new")}>
+          <Action onClick={() => setCreating(true)}>
             <Plus size={18} /> Novo produto
           </Action>
         )}
       </Heading>
-      {editor && (
+      {creating && (
         <ProductEditor
-          key={editor === "new" ? editor : editor.id}
-          product={editor === "new" ? null : editor}
-          onClose={() => edit(null)}
-          onSave={() => {
-            edit(null);
-            refresh((value) => value + 1);
+          product={null}
+          onClose={() => setCreating(false)}
+          onSave={(saved) => {
+            if (saved) window.location.assign(`/produtos/${saved.id}#checkout`);
           }}
         />
       )}
@@ -494,12 +573,8 @@ function Products({ canEdit }: { canEdit: boolean }) {
                     <strong>{money(product.price_cents)}</strong>
                     {canEdit && (
                       <div className="actions">
-                        <button
-                          className="button secondary"
-                          onClick={() => edit(product)}
-                        >
-                          Gerenciar
-                        </button>
+                        <a className="button secondary" href={`/produtos/${product.id}`}>Gerenciar</a>
+                        <a className="button secondary" href={`/produtos/${product.id}#checkout`}>Editar checkout</a>
                         {product.active && (
                           <a
                             className="button secondary"
@@ -607,10 +682,13 @@ type Commission = {
   status: "approved" | "reversed";
 };
 
-function Affiliates({ producer }: { producer: boolean }) {
+function Affiliates({ producer, productId }: { producer: boolean; productId?: string }) {
   const [revision, refresh] = useState(0);
   const products = useData<Product[]>("produtos");
-  const requests = useData<AffiliateRequest[]>("afiliacoes", revision);
+  const requests = useData<AffiliateRequest[]>(
+    producer && productId ? `afiliacoes?produto=${productId}` : "afiliacoes",
+    revision,
+  );
   const commissions = useData<Commission[]>("comissoes");
   const task = useTask();
   const mutate = (data: Record<string, unknown>) =>
@@ -627,7 +705,9 @@ function Affiliates({ producer }: { producer: boolean }) {
             ? "Revise pedidos de afiliação aos seus produtos."
             : "Solicite afiliação a produtos disponíveis."
         }
-      />
+      >
+        {producer && productId && <a className="button secondary" href="/afiliados">Ver todas as solicitações</a>}
+      </Heading>
       <Feedback status={task} />
       <Data state={products}>
         {(list) => (
@@ -1337,8 +1417,10 @@ export function Dashboard({
   page,
   session,
   confirmed,
+  affiliateProductId,
 }: {
   page: string;
+  affiliateProductId?: string;
   session: Session & { profile: Profile };
   confirmed: boolean;
 }) {
@@ -1349,9 +1431,12 @@ export function Dashboard({
     (item) =>
       item.roles === "all" || item.roles.split(" ").includes(profile.role),
   );
-  const active = items.find((item) => item.id === page);
+  const productId = /^produtos\/([\da-f-]{36})$/i.exec(page)?.[1];
+  const active = items.find((item) => item.id === (productId ? "produtos" : page));
   const products = active?.id === "produtos" && (
-    <Products canEdit={profile.role === "producer"} />
+    productId && profile.role === "producer" ?
+      <ProductDetail key={productId} id={productId} /> :
+      <Products canEdit={profile.role === "producer"} />
   );
   return (
     <div className="dashboard">
@@ -1377,8 +1462,8 @@ export function Dashboard({
             <a
               href={`/${id}`}
               key={id}
-              className={page === id ? "nav-current" : ""}
-              aria-current={page === id ? "page" : undefined}
+              className={active?.id === id ? "nav-current" : ""}
+              aria-current={active?.id === id ? "page" : undefined}
             >
               <Icon size={19} /> {label}
             </a>
@@ -1451,6 +1536,7 @@ export function Dashboard({
           )}
           {active?.id === "dashboard" && <Overview profile={profile} />}
           {products}
+          {active?.id === "marketplace" && <Marketplace role={profile.role} />}
           {active?.id === "checkout" && (
             <>
               <CheckoutLinks />
@@ -1458,7 +1544,7 @@ export function Dashboard({
             </>
           )}
           {active?.id === "afiliados" && (
-            <Affiliates producer={profile.role === "producer"} />
+            <Affiliates producer={profile.role === "producer"} productId={affiliateProductId} />
           )}
           {active?.id === "membros" && (
             <>
