@@ -6,6 +6,19 @@ import {
   validPassword,
   type Registration,
 } from "./identity.ts";
+import { digitalPacks, type PackFile } from "./pack-catalog.ts";
+import { createPackZip } from "./pack-zip.ts";
+import {
+  platformFee,
+  platformFeePercent,
+  stripeClient,
+  stripeConfig,
+  stripeLink,
+  StripeProblem,
+  type ConnectedAccount,
+  type Payout,
+  type StripeBalance,
+} from "./stripe.ts";
 
 export type Environment = Record<string, string | undefined>;
 type Tokens = {
@@ -55,7 +68,7 @@ const cookieKeys = {
   remember: "vendeora_remember",
 };
 const orderFields =
-  "id,product_id,seller_id,buyer_id,amount_cents,currency,status,created_at,paid_at";
+  "id,product_id,seller_id,buyer_id,amount_cents,currency,status,created_at,paid_at,payment_mode,platform_fee_cents";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const productTypes = [
@@ -186,6 +199,15 @@ function requireRole(session: Session, role: Profile["role"]) {
     throw new Problem(403, "Seu perfil não tem acesso a esta ação.");
 }
 
+function hasVerifiedAuthenticator(access: string) {
+  try {
+    const claims = access.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(claims)).aal === "aal2";
+  } catch {
+    return false;
+  }
+}
+
 async function signedStripeEvent(request: Request, secret: string) {
   const signature = request.headers.get("stripe-signature") ?? "";
   const timestamp = signature.match(/(?:^|,)t=(\d+)(?:,|$)/)?.[1];
@@ -254,6 +276,26 @@ export async function handleApi(request: Request, env: Environment) {
     return new Response(null, { status: 303, headers });
   };
   const sb = client(env);
+  const stripe = stripeConfig(env);
+  const allowedStripe =
+    stripe.enabled &&
+    (stripe.mode === "test" || Boolean(env.SITE_URL && secure));
+  const manualPayouts = env.VENDEORA_STRIPE_MANUAL_PAYOUTS === "true";
+  const provider = stripeClient(stripe.key ?? "");
+  const serviceRpc = <T>(name: string, params: Json) =>
+    sb<T>(rpc(name), jsonBody(params), undefined, true);
+  const databaseMode = () =>
+    sb<string>(rpc("vendeora_commerce_mode"), jsonBody({}));
+  const binding = (producer: string, account?: string) =>
+    serviceRpc<string | null>("vendeora_connect_binding", {
+      producer,
+      active_mode: stripe.mode,
+      new_account: account ?? null,
+    });
+  const connectReady = async () =>
+    allowedStripe && (await databaseMode()) === stripe.mode;
+  const canSell = (account: ConnectedAccount) =>
+    account.details_submitted && account.capabilities?.transfers === "active";
   const auth = <T>(action: string, init?: RequestInit, token?: string) =>
     sb<T>(`/auth/v1/${action}`, init, token);
 
@@ -319,6 +361,31 @@ export async function handleApi(request: Request, env: Environment) {
       if (!env.STRIPE_WEBHOOK_SECRET)
         throw new Problem(503, "Gateway indisponível.");
       const event = await signedStripeEvent(request, env.STRIPE_WEBHOOK_SECRET);
+      const eventMode =
+        event.livemode === true
+          ? "live"
+          : event.livemode === false
+            ? "test"
+            : null;
+      if (!eventMode || stripe.mode !== eventMode)
+        return send({ received: true });
+      const payment = event.data.object;
+      if (
+        event.type === "charge.refunded" &&
+        uuid.test(text(payment.metadata?.vendeora_order))
+      ) {
+        const processed = await serviceRpc<boolean>("vendeora_refund_event", {
+          event_id: event.id,
+          payment_intent: payment.payment_intent,
+          original_amount: payment.amount,
+          amount_refunded: payment.amount_refunded,
+          payment_currency: payment.currency,
+          event_mode: eventMode,
+        });
+        if (!processed)
+          throw new Problem(409, "O reembolso ainda não pôde ser conciliado.");
+        return send({ received: true });
+      }
       const result: Record<string, string> = {
         "checkout.session.completed": "paid",
         "checkout.session.async_payment_succeeded": "paid",
@@ -326,14 +393,13 @@ export async function handleApi(request: Request, env: Environment) {
         "checkout.session.expired": "expired",
       };
       const status = result[event.type];
-      if (!status || event.livemode !== false) return send({ received: true });
-      const payment = event.data.object;
+      if (!status) return send({ received: true });
       if (status === "paid" && payment.payment_status !== "paid")
         return send({ received: true });
       if (!uuid.test(text(payment.metadata?.order_id)))
         return send({ received: true });
       const processed = await sb<boolean>(
-        rpc("vendeora_payment_event"),
+        rpc("vendeora_payment_event_v2"),
         jsonBody({
           event_id: event.id,
           session_id: payment.id,
@@ -341,6 +407,8 @@ export async function handleApi(request: Request, env: Environment) {
           next_status: status,
           amount: payment.amount_total,
           payment_currency: payment.currency,
+          payment_intent: payment.payment_intent ?? null,
+          event_mode: eventMode,
         }),
         undefined,
         true,
@@ -504,9 +572,7 @@ export async function handleApi(request: Request, env: Environment) {
       return send({
         offer,
         style: styles[0] ?? null,
-        testPayments:
-          env.STRIPE_SECRET_KEY?.startsWith("sk_test_") &&
-          Boolean(env.STRIPE_WEBHOOK_SECRET && env.SUPABASE_SERVICE_ROLE_KEY),
+        payment: { mode: stripe.mode, enabled: await connectReady() },
       });
     }
 
@@ -534,6 +600,214 @@ export async function handleApi(request: Request, env: Environment) {
     ) => sb<T>(rows(table, query), jsonBody(values, method, true), access);
     const call = <T>(name: string, values: unknown) =>
       sb<T>(rpc(name), jsonBody(values), access);
+    if (route === "GET /api/packs") {
+      requireRole(current, "producer");
+      return send(
+        digitalPacks.map(({ files, ...pack }) => ({
+          ...pack,
+          files: files.map(({ filename }) => filename),
+        })),
+      );
+    }
+    if (route === "POST /api/packs") {
+      requireRole(current, "producer");
+      const body = await bodyFrom(request);
+      const pack = digitalPacks.find(({ slug }) => slug === body.slug);
+      const price = body.price;
+      if (
+        !pack ||
+        typeof price !== "number" ||
+        !Number.isInteger(price) ||
+        price < 500 ||
+        price > 10000000
+      )
+        throw new Problem(400, "Escolha um pack e informe um preço válido.");
+      try {
+        const id = await call<string>("vendeora_create_pack", {
+          template_slug: pack.slug,
+          template_title: pack.title,
+          template_description: pack.description,
+          template_price: price,
+          materials: pack.files,
+        });
+        return send({ id }, 201);
+      } catch (error) {
+        if (error instanceof SupabaseError && error.code === "23505")
+          throw new Problem(409, "Este pack já está no seu catálogo.");
+        throw error;
+      }
+    }
+    if (route === "GET /api/packs/biblioteca")
+      return send(await call("vendeora_pack_library", {}));
+    if (route === "GET /api/packs/download") {
+      const id = requiredId(url.searchParams.get("id"));
+      const [pack] = await call<{ pack_slug: string }[]>(
+        "vendeora_pack_library",
+        { requested_product: id },
+      );
+      if (!pack) throw new Problem(404, "Pack indisponível.");
+      const files = await read<PackFile[]>("pack_files", {
+        product_id: `eq.${id}`,
+        select: "filename,content",
+        order: "filename",
+      });
+      if (!files.length) throw new Problem(404, "Pack indisponível.");
+      headers.set("Content-Type", "application/zip");
+      headers.set(
+        "Content-Disposition",
+        `attachment; filename="${pack.pack_slug}.zip"`,
+      );
+      return new Response(createPackZip(files), { headers });
+    }
+    if (
+      route === "GET /api/stripe/conta" ||
+      route === "POST /api/stripe/conta" ||
+      route === "POST /api/stripe/saques"
+    ) {
+      requireRole(current, "producer");
+      const enabled = await connectReady();
+      const status = {
+        mode: stripe.mode,
+        enabled,
+        fee: platformFeePercent,
+        verified: hasVerifiedAuthenticator(access),
+      };
+      if (route === "GET /api/stripe/conta") {
+        const id = enabled ? await binding(user.id) : null;
+        if (!id) return send({ ...status, account: null });
+        const account = await provider<ConnectedAccount>(`/v1/accounts/${id}`);
+        const money = account.payouts_enabled
+          ? await Promise.all([
+              provider<StripeBalance>("/v1/balance", { account: id }),
+              provider<{ data: Payout[] }>("/v1/payouts?limit=25", {
+                account: id,
+              }),
+            ])
+          : null;
+        return send({
+          ...status,
+          account: {
+            canSell: canSell(account),
+            canPayout: account.payouts_enabled,
+            detailsSubmitted: account.details_submitted,
+            manual:
+              manualPayouts &&
+              account.settings?.payouts?.schedule?.interval === "manual",
+            available:
+              money?.[0].available.find(({ currency }) => currency === "brl")
+                ?.amount ?? 0,
+            pending:
+              money?.[0].pending.find(({ currency }) => currency === "brl")
+                ?.amount ?? 0,
+            payouts:
+              money?.[1].data.filter(({ currency }) => currency === "brl") ??
+              [],
+          },
+        });
+      }
+      if (!enabled)
+        throw new Problem(
+          503,
+          "O Stripe Connect ainda aguarda configuração pela VENDEORA.",
+        );
+      let id = await binding(user.id);
+      if (route === "POST /api/stripe/conta") {
+        if (!id) {
+          const account = await provider<ConnectedAccount>("/v1/accounts", {
+            form: new URLSearchParams({
+              type: "express",
+              country: "BR",
+              "capabilities[transfers][requested]": "true",
+              ...(manualPayouts
+                ? { "settings[payouts][schedule][interval]": "manual" }
+                : {}),
+            }),
+            idempotency: `vendeora-account-${stripe.mode}-${user.id}`,
+          });
+          id = await binding(user.id, account.id);
+        }
+        if (!id)
+          throw new Problem(
+            503,
+            "O vínculo com a Stripe ainda não está disponível.",
+          );
+        const onboard = await provider<{ url: string }>("/v1/account_links", {
+          form: new URLSearchParams({
+            account: id,
+            type: "account_onboarding",
+            return_url: `${origin}/financeiro`,
+            refresh_url: `${origin}/financeiro`,
+          }),
+        });
+        return send({ url: stripeLink(onboard.url, "connect.stripe.com") });
+      }
+      if (!status.verified)
+        throw new Problem(
+          403,
+          "Confirme o autenticador para solicitar saques.",
+        );
+      if (!id || !manualPayouts)
+        throw new Problem(
+          409,
+          "Saques pelo painel estão indisponíveis para esta conta.",
+        );
+      const account = await provider<ConnectedAccount>(`/v1/accounts/${id}`);
+      if (
+        !account.payouts_enabled ||
+        account.settings?.payouts?.schedule?.interval !== "manual"
+      )
+        throw new Problem(
+          409,
+          "A Stripe ainda não liberou saques manuais para esta conta.",
+        );
+      const body = await bodyFrom(request);
+      const attempt = requiredId(body.attempt);
+      const amount = body.amount;
+      if (
+        typeof amount !== "number" ||
+        !Number.isInteger(amount) ||
+        amount < 100 ||
+        amount > 10000000
+      )
+        throw new Problem(400, "Informe um valor de saque válido.");
+      const params = {
+        producer: user.id,
+        active_mode: stripe.mode,
+        attempt,
+        amount,
+      };
+      type RequestRow = {
+        payout_id: string | null;
+        original_amount: number;
+        started_at: string;
+      };
+      const [saved] = await serviceRpc<RequestRow[]>(
+        "vendeora_payout_request",
+        params,
+      );
+      if (saved.original_amount !== amount)
+        throw new Problem(409, "O valor desta solicitação já foi definido.");
+      if (saved.payout_id) return send({ id: saved.payout_id });
+      if (Date.now() - Date.parse(saved.started_at) > 23 * 60 * 60 * 1000)
+        throw new Problem(
+          409,
+          "Confira o histórico de repasses antes de criar uma nova solicitação.",
+        );
+      const payout = await provider<Payout>("/v1/payouts", {
+        account: id,
+        idempotency: `vendeora-payout-${attempt}`,
+        form: new URLSearchParams({
+          amount: String(amount),
+          currency: "brl",
+          "metadata[vendeora_request]": attempt,
+        }),
+      });
+      await serviceRpc<RequestRow[]>("vendeora_payout_request", {
+        ...params,
+        completed_payout: payout.id,
+      });
+      return send({ id: payout.id }, 201);
+    }
     async function quote(product: string, code: unknown) {
       const normalized = text(code).trim().toUpperCase();
       if (!/^[A-Z0-9-]{3,32}$/.test(normalized))
@@ -1105,14 +1379,10 @@ export async function handleApi(request: Request, env: Environment) {
       return send(order);
     }
     if (route === "POST /api/checkout") {
-      if (
-        !env.STRIPE_SECRET_KEY?.startsWith("sk_test_") ||
-        !env.STRIPE_WEBHOOK_SECRET ||
-        !env.SUPABASE_SERVICE_ROLE_KEY
-      )
+      if (!(await connectReady()))
         throw new Problem(
           503,
-          "O gateway de testes ainda não foi configurado.",
+          "O Stripe Connect ainda aguarda configuração pela VENDEORA.",
         );
       const body = await bodyFrom(request);
       const offer = await getOffer(requiredId(body.product_id));
@@ -1131,19 +1401,39 @@ export async function handleApi(request: Request, env: Environment) {
       if (product.owner_id === user.id)
         throw new Problem(
           400,
-          "Use uma conta compradora diferente para testar este checkout.",
+          "Use uma conta compradora diferente da conta produtora.",
+        );
+      const destination = await binding(product.owner_id);
+      if (
+        !destination ||
+        !canSell(
+          await provider<ConnectedAccount>(`/v1/accounts/${destination}`),
+        )
+      )
+        throw new Problem(
+          409,
+          "O produtor precisa concluir a configuração de recebimentos.",
         );
       const orderId = requiredId(body.attempt_id);
       const discount = text(body.coupon)
         ? await quote(offer.id, body.coupon)
         : null;
-      const [referral] = body.referral
-        ? await call<{ id: string; commission_percent: number }[]>(
-            "vendeora_checkout_referral",
-            { product: offer.id, referral: requiredId(body.referral) },
-          )
-        : [];
-      let order: Order & { product_id: string; buyer_id: string };
+      const [referral] =
+        stripe.mode === "test" && body.referral
+          ? await call<{ id: string; commission_percent: number }[]>(
+              "vendeora_checkout_referral",
+              { product: offer.id, referral: requiredId(body.referral) },
+            )
+          : [];
+      const amount = discount?.amount_cents ?? offer.price_cents;
+      let order: Order & {
+        product_id: string;
+        buyer_id: string;
+        platform_fee_cents: number;
+        provider_destination: string;
+        checkout_title: string;
+        created_at: string;
+      };
       try {
         [order] = await sb<(typeof order)[]>(
           rows("orders"),
@@ -1153,10 +1443,14 @@ export async function handleApi(request: Request, env: Environment) {
               product_id: offer.id,
               seller_id: product.owner_id,
               buyer_id: user.id,
-              amount_cents: discount?.amount_cents ?? offer.price_cents,
+              amount_cents: amount,
               applied_coupon_id: discount?.coupon_id ?? null,
               referral_id: referral?.id ?? null,
               commission_percent: referral?.commission_percent ?? 0,
+              payment_mode: stripe.mode,
+              platform_fee_cents: platformFee(amount),
+              provider_destination: destination,
+              checkout_title: offer.title,
             },
             "POST",
             true,
@@ -1172,12 +1466,18 @@ export async function handleApi(request: Request, env: Environment) {
             id: `eq.${orderId}`,
             buyer_id: `eq.${user.id}`,
             product_id: `eq.${offer.id}`,
+            payment_mode: `eq.${stripe.mode}`,
           }),
           {},
           undefined,
           true,
         );
-        if (!order || order.status !== "pending")
+        if (
+          !order ||
+          order.status !== "pending" ||
+          order.provider_destination !== destination ||
+          Date.now() - Date.parse(order.created_at) > 23 * 60 * 60 * 1000
+        )
           throw new Problem(
             409,
             "Atualize o checkout para iniciar um novo pedido.",
@@ -1192,43 +1492,34 @@ export async function handleApi(request: Request, env: Environment) {
         "line_items[0][quantity]": "1",
         "line_items[0][price_data][currency]": "brl",
         "line_items[0][price_data][unit_amount]": String(order.amount_cents),
-        "line_items[0][price_data][product_data][name]": offer.title,
+        "line_items[0][price_data][product_data][name]": order.checkout_title,
         "metadata[order_id]": order.id,
+        "payment_intent_data[metadata][vendeora_order]": order.id,
+        "payment_intent_data[application_fee_amount]": String(
+          order.platform_fee_cents,
+        ),
+        "payment_intent_data[transfer_data][destination]":
+          order.provider_destination,
       });
-      const response = await fetch(
-        "https://api.stripe.com/v1/checkout/sessions",
+      const payment = await provider<{ id: string; url: string }>(
+        "/v1/checkout/sessions",
         {
-          method: "POST",
-          body: paymentForm,
-          headers: {
-            Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
-            "Idempotency-Key": order.id,
-          },
-          redirect: "error",
+          form: paymentForm,
+          idempotency: order.id,
         },
       );
-      if (!response.ok)
-        throw new Problem(
-          502,
-          "O gateway não abriu o pagamento. Tente novamente.",
-        );
-      const payment = await response.json();
-      if (
-        typeof payment.url !== "string" ||
-        new URL(payment.url).origin !== "https://checkout.stripe.com"
-      )
-        throw new Problem(502, "O gateway retornou um endereço inválido.");
+      const checkout = stripeLink(payment.url, "checkout.stripe.com");
       await sb(
         rows("orders", { id: `eq.${order.id}` }),
         jsonBody({ provider_session: payment.id }, "PATCH"),
         undefined,
         true,
       );
-      return send({ url: payment.url });
+      return send({ url: checkout });
     }
     return send({ error: "Rota não encontrada." }, 404);
   } catch (error) {
-    if (error instanceof Problem)
+    if (error instanceof Problem || error instanceof StripeProblem)
       return send({ error: error.message }, error.status);
     if (error instanceof SupabaseError) {
       if (error.status === 429)

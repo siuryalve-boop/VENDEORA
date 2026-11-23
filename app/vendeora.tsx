@@ -46,7 +46,7 @@ function Checkout({ path, id }: { path: string; id: string }) {
   const offer = useLoad<{
     offer: Product;
     style: { headline: string; accent: string } | null;
-    testPayments?: boolean;
+    payment: { enabled: boolean; mode: "test" | "live" };
   }>(`oferta?id=${encodeURIComponent(id)}`);
   const session = useLoad<Session>("auth/session");
   const [attempt, setAttempt] = useState("");
@@ -168,10 +168,12 @@ function Checkout({ path, id }: { path: string; id: string }) {
             </form>
           )}
           {offer?.data &&
-            (offer.data.testPayments ? (
+            (offer.data.payment.enabled ? (
               <>
                 <p>
-                  Ambiente de testes Stripe. Use um cartão de teste do gateway.
+                  {offer.data.payment.mode === "test"
+                    ? "Ambiente de testes Stripe. Use um cartão de teste do gateway."
+                    : "Pagamento com cartão pela Stripe."}
                 </p>
                 {session?.data &&
                   (session.data.profile ? (
@@ -250,7 +252,12 @@ function OrderPage({ id }: { id: string }) {
             <ShieldCheck size={24} />
             <div>
               <strong>{money(order.data.amount_cents)}</strong>
-              <p>Pedido #{order.data.id.slice(0, 8)} · Ambiente de testes</p>
+              <p>
+                Pedido #{order.data.id.slice(0, 8)}
+                {order.data.payment_mode === "test"
+                  ? " · Ambiente de testes"
+                  : ""}
+              </p>
             </div>
           </div>
         )}

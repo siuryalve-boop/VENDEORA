@@ -37,6 +37,8 @@ export type Order = {
   amount_cents: number;
   created_at: string;
   paid_at: string | null;
+  payment_mode: "test" | "live";
+  platform_fee_cents: number;
 };
 
 export const money = (cents: number) =>

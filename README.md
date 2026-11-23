@@ -27,9 +27,16 @@ Copie `.env.example` para `.env.local` e preencha a URL e a chave publicável do
 
 O Supabase armazena e verifica senhas. O CPF bruto sai dos metadados antes da inserção do usuário e é substituído por um HMAC com chave protegida no esquema `private`. Data de nascimento e telefone ficam no mesmo esquema. Preserve a chave de HMAC nos backups criptografados. A confirmação de e-mail e o perfil ativo são verificados no banco. O papel `admin` só pode ser atribuído por uma operação privilegiada e deve ter autenticação reforçada antes do uso administrativo em produção. Os campos internos de verificação de identidade permitem integrar um provedor futuro de titularidade.
 
-## Stripe em testes
+## Stripe Connect e packs digitais
 
-Configure `STRIPE_SECRET_KEY` com uma chave `sk_test_…`, `STRIPE_WEBHOOK_SECRET` com o segredo do endpoint de teste e `SUPABASE_SERVICE_ROLE_KEY` apenas no servidor. No Stripe, cadastre `POST /api/stripe/webhook` para os eventos `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed` e `checkout.session.expired`. Use uma conta compradora diferente da conta produtora e um cartão de teste do Stripe. O webhook confirma o valor, a moeda, o identificador da sessão e o pedido antes de liberar aulas. O código restringe o checkout ao ambiente de testes.
+1. Aplique as migrações do Supabase em ordem. O banco inicia em modo `test`.
+2. Na hospedagem, configure `SITE_URL` com a origem HTTPS, `STRIPE_SECRET_KEY` com a chave `sk_test_…` da plataforma Connect e `SUPABASE_SERVICE_ROLE_KEY`. Cadastre `/api/stripe/webhook` na Stripe e salve o segredo `whsec_…` em `STRIPE_WEBHOOK_SECRET`.
+3. Selecione os eventos da plataforma `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired` e `charge.refunded`.
+4. No painel Financeiro, configure o recebimento como produtor. A Stripe verifica o produtor e solicita os dados bancários. As vendas por cartão usam a conta conectada como destino e reservam 5% do valor pago para a VENDEORA. O custo de processamento da Stripe é debitado da plataforma.
+5. Crie um pack em **Packs digitais**, publique em **Produtos** e abra o link de checkout em uma conta compradora diferente. Após a confirmação pelo webhook, o ZIP aparece na biblioteca da conta compradora. O reembolso integral cancela o acesso.
+6. Para testar saques manuais, defina `VENDEORA_STRIPE_MANUAL_PAYOUTS=true` antes de conectar as contas de teste. Saques exigem autenticação por aplicativo e conta com calendário manual habilitado.
+
+Após aprovação da plataforma Connect e validação em testes, use a chave live, o segredo do webhook live, `VENDEORA_STRIPE_MODE=live` e ajuste `private.commerce_settings.payment_mode` para `live` no Supabase. O modo separa as contas conectadas, os pedidos e os acessos pagos.
 
 ## Publicar na Vercel
 
@@ -49,7 +56,7 @@ GitHub guarda o código. Para o banco, habilite os backups do plano Supabase ou 
 
 ## Escopo desta versão
 
-Inclui cadastro e login com Supabase, confirmação e recuperação por e-mail configurável, painel com pedidos reais do banco, produtos, links de checkout, pedidos Stripe em teste, afiliações com revisão, aulas de texto com progresso, consulta administrativa de perfis e solicitações de privacidade. Pagamentos reais, Pix, boleto, repasses, saques, coprodução, uploads de mídia e verificação de titularidade exigem implementação ou configuração adicional.
+Inclui cadastro e login com Supabase, confirmação e recuperação por e-mail configurável, painel com pedidos do banco, produtos, packs com download privado, checkout por cartão via Stripe Connect, afiliações com revisão, aulas de texto com progresso, consulta administrativa de perfis e solicitações de privacidade. O checkout e os saques dependem da configuração da Stripe. Pix, boleto, assinaturas, repasses de afiliados, coprodução, uploads de mídia e verificação de titularidade na VENDEORA exigem implementação adicional.
 
 O painel do produtor também traz CRM com histórico de compradores e exportação CSV, relatórios de vendas, edição de texto e cor do checkout, cupons e módulos de cursos. Notificações internas registram mudanças de pagamentos, afiliações e atendimento. A equipe pode responder a chamados e suspender ou reativar contas pelo painel após verificar a sessão com um aplicativo autenticador.
 

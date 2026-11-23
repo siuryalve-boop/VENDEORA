@@ -16,6 +16,7 @@ import {
   Link2,
   LogOut,
   Menu,
+  Package,
   Plus,
   Settings,
   ShieldCheck,
@@ -26,6 +27,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { CheckoutEditor } from "./checkout-editor";
+import { PackCatalog, PackLibrary, StripePanel } from "./commerce";
 import {
   CourseModules,
   Customers,
@@ -58,6 +60,7 @@ import {
 const navigation = [
   { id: "dashboard", label: "Visão geral", icon: House, roles: "all" },
   { id: "produtos", label: "Produtos", icon: Boxes, roles: "producer admin" },
+  { id: "packs", label: "Packs digitais", icon: Package, roles: "producer" },
   { id: "vendas", label: "Vendas", icon: ShoppingBag, roles: "producer admin" },
   { id: "clientes", label: "Clientes", icon: ContactRound, roles: "producer" },
   { id: "checkout", label: "Checkout", icon: CreditCard, roles: "producer" },
@@ -1040,7 +1043,7 @@ function Orders({ financial }: { financial: boolean }) {
         title={financial ? "Financeiro" : "Vendas"}
         subtitle={
           financial
-            ? "Consulte o resumo dos pedidos registrados no ambiente de teste."
+            ? "Consulte o resumo de vendas e as taxas registradas neste ambiente."
             : "Consulte as vendas registradas e acompanhe o status dos pedidos."
         }
       >
@@ -1069,8 +1072,21 @@ function Orders({ financial }: { financial: boolean }) {
                   <span className="metric-icon">
                     <Wallet size={20} />
                   </span>
-                  <p>Volume aprovado em testes</p>
+                  <p>Volume de vendas aprovadas</p>
                   <strong>{money(total(list))}</strong>
+                </article>
+                <article className="panel metric">
+                  <p>Taxa da VENDEORA em vendas aprovadas</p>
+                  <strong>
+                    {money(
+                      list
+                        .filter((order) => order.status === "paid")
+                        .reduce(
+                          (sum, order) => sum + order.platform_fee_cents,
+                          0,
+                        ),
+                    )}
+                  </strong>
                 </article>
               </div>
             )}
@@ -1445,10 +1461,19 @@ export function Dashboard({
             <Affiliates producer={profile.role === "producer"} />
           )}
           {active?.id === "membros" && (
-            <Members producer={profile.role === "producer"} />
+            <>
+              <Members producer={profile.role === "producer"} />
+              <PackLibrary />
+            </>
           )}
+          {active?.id === "packs" && <PackCatalog />}
           {active?.id === "vendas" && <Orders financial={false} />}
-          {active?.id === "financeiro" && <Orders financial />}
+          {active?.id === "financeiro" && (
+            <>
+              <Orders financial />
+              {profile.role === "producer" && <StripePanel />}
+            </>
+          )}
           {active?.id === "configuracoes" && <Account session={session} />}
           {active?.id === "usuarios" && <AdminUsers />}
           {active?.id === "clientes" && <Customers />}
