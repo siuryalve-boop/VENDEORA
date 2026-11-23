@@ -1189,10 +1189,11 @@ export async function handleApi(request: Request, env: Environment) {
       const days = Number(url.searchParams.get("days") ?? 30);
       if (![1, 7, 30, 90].includes(days))
         throw new Problem(400, "Período inválido.");
-      const [summary] = await call<Json[]>("vendeora_sales_overview", {
-        period_days: days,
-      });
-      return send(summary);
+      const [summaries, metrics] = await Promise.all([
+        call<Json[]>("vendeora_sales_overview", { period_days: days }),
+        call<Json>("vendeora_producer_metrics", { period_days: days }),
+      ]);
+      return send({ ...summaries[0], ...metrics });
     }
     if (route === "GET /api/produtos") {
       const query: Record<string, string> = {

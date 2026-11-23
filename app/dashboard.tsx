@@ -167,6 +167,18 @@ type SalesSummary = {
   gross_cents: number;
   fee_cents: number;
   refunded: number;
+  declined: number;
+  today_cents: number;
+  month_cents: number;
+  lifetime_cents: number;
+  current_gross: number;
+  previous_gross: number;
+  top_products: {
+    product_id: string;
+    title: string;
+    quantity: number;
+    gross_cents: number;
+  }[];
   buckets: number[];
   payment_mode: "test" | "live";
 };
@@ -292,15 +304,71 @@ function Overview({ profile }: { profile: Profile }) {
                   <span>
                     Reembolsos <strong>{overview.refunded}</strong>
                   </span>
+                  <span>
+                    Pedidos recusados <strong>{overview.declined}</strong>
+                  </span>
                   <a className="text-link" href="/financeiro">
                     Consultar saldo e saques
                   </a>
                 </div>
               )}
+              {overview && (
+                <section className="panel">
+                  <div className="panel-heading">
+                    <h2>Faturamento por data de aprovação</h2>
+                  </div>
+                  <div className="panel-form form">
+                    <dl className="form-grid">
+                      <div>
+                        <dt>Hoje</dt>
+                        <dd>
+                          <strong>{money(overview.today_cents)}</strong>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Este mês</dt>
+                        <dd>
+                          <strong>{money(overview.month_cents)}</strong>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Desde o início</dt>
+                        <dd>
+                          <strong>{money(overview.lifetime_cents)}</strong>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Período selecionado</dt>
+                        <dd>
+                          <strong>{money(overview.current_gross)}</strong>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Período anterior equivalente</dt>
+                        <dd>
+                          <strong>{money(overview.previous_gross)}</strong>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Variação</dt>
+                        <dd>
+                          <strong>
+                            {money(
+                              overview.current_gross - overview.previous_gross,
+                            )}
+                          </strong>
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </section>
+              )}
               <section className="panel">
                 <div className="panel-heading">
                   <h2>
-                    {seller ? "Faturamento no período" : "Compras no período"}
+                    {seller
+                      ? "Faturamento por data do pedido"
+                      : "Compras no período"}
                   </h2>
                 </div>
                 {approved ? (
@@ -336,6 +404,40 @@ function Overview({ profile }: { profile: Profile }) {
                 </div>
                 <OrderTable orders={filtered.slice(0, 6)} />
               </section>
+              {overview && (
+                <section className="panel">
+                  <div className="panel-heading">
+                    <h2>Produtos mais vendidos no período</h2>
+                  </div>
+                  {overview.top_products.length ? (
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Produto</th>
+                            <th>Vendas aprovadas</th>
+                            <th>Faturamento</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {overview.top_products.map((product) => (
+                            <tr key={product.product_id}>
+                              <td>{product.title}</td>
+                              <td>{product.quantity}</td>
+                              <td>{money(product.gross_cents)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <Empty
+                      title="Nenhum produto vendido"
+                      body="Aqui aparecem os produtos com mais vendas aprovadas no período."
+                    />
+                  )}
+                </section>
+              )}
             </>
           );
         }}
