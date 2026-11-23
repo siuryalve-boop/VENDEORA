@@ -1,0 +1,12 @@
+node_modules/
+.next/
+dist/
+.vercel/
+.wrangler/
+.env*
+!.env.example
+*.tsbuildinfo
+*.log
+*.sql.gz
+*.dump
+supabase/.temp/
